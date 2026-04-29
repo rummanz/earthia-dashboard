@@ -6,26 +6,47 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
 import { useSettingsStore } from '@/lib/store'
 import { useRouter } from 'next/navigation'
 import { ArrowRight, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+interface AgentRow {
+  id: string
+  name: string
+  model: string | null
+  status: string
+  gateway_agent_id: string | null
+  last_seen_at: string | null
+}
+
+async function fetchAgents(): Promise<AgentRow[]> {
+  const res = await fetch('/api/agents', { cache: 'no-store' })
+  if (!res.ok) return []
+  return (await res.json()) as AgentRow[]
+}
+
 export function AgentsView({ agents }: { agents: AgentMeta[] }) {
   const [reading, setReading] = useState<AgentMeta | null>(null)
   const router = useRouter()
   const settings = useSettingsStore((s) => s.settings)
-  const { data: status } = useQuery({
-    queryKey: ['agent-status'],
-    queryFn: () => api.agentStatus(),
+  const { data: liveAgents } = useQuery({
+    queryKey: ['agents-list'],
+    queryFn: fetchAgents,
     refetchInterval: 5000,
   })
+
+  const liveByGatewayId = new Map<string, AgentRow>()
+  for (const a of liveAgents ?? []) {
+    if (a.gateway_agent_id) liveByGatewayId.set(a.gateway_agent_id, a)
+  }
 
   if (agents.length === 0) {
     return (
       <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-6 text-center">
-        <p className="text-[var(--muted)]">Agent config unavailable. Could not load .md files from /agents.</p>
+        <p className="text-[var(--muted)]">
+          Agent config unavailable. Could not load .md files from /agents.
+        </p>
       </div>
     )
   }
@@ -41,8 +62,10 @@ export function AgentsView({ agents }: { agents: AgentMeta[] }) {
 
       <div className="space-y-3">
         {agents.map((a, i) => {
-          const s = status?.[a.id]?.status ?? 'idle'
-          const model = settings.agentModels[a.id] ?? a.model ?? '—'
+          const live = liveByGatewayId.get(a.id)
+          const status = live?.status ?? 'missing'
+          const model =
+            settings.agentModels[a.id] ?? live?.model ?? a.model ?? '—'
           return (
             <div key={a.id} className="space-y-3">
               <Card>
@@ -53,10 +76,12 @@ export function AgentsView({ agents }: { agents: AgentMeta[] }) {
                         <span className="font-mono uppercase tracking-widest text-xs text-[var(--muted)]">
                           ⬡ {a.name}
                         </span>
-                        <StatusDot status={s} />
+                        <StatusDot status={status} registered={!!live} />
                       </div>
                       <h3 className="font-semibold text-base mb-1">{a.role}</h3>
-                      <p className="text-sm text-[var(--muted)] mb-3">{a.description}</p>
+                      <p className="text-sm text-[var(--muted)] mb-3">
+                        {a.description}
+                      </p>
 
                       {a.capabilities.length > 0 && (
                         <div className="mb-3">
@@ -73,7 +98,9 @@ export function AgentsView({ agents }: { agents: AgentMeta[] }) {
                       )}
 
                       <div className="flex items-center gap-2 mt-3">
-                        <span className="text-xs font-mono text-[var(--muted)]">Model:</span>
+                        <span className="text-xs font-mono text-[var(--muted)]">
+                          Model:
+                        </span>
                         <Badge variant="outline">{model}</Badge>
                         <button
                           onClick={() => router.push('/settings')}
@@ -83,7 +110,11 @@ export function AgentsView({ agents }: { agents: AgentMeta[] }) {
                         </button>
                       </div>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => setReading(a)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setReading(a)}
+                    >
                       View Instructions
                       <ExternalLink className="h-3 w-3" />
                     </Button>
@@ -112,17 +143,27 @@ export function AgentsView({ agents }: { agents: AgentMeta[] }) {
   )
 }
 
-function StatusDot({ status }: { status: string }) {
-  const colorClass =
-    status === 'running'
-      ? 'bg-[var(--warning)] animate-pulse-dot'
-      : status === 'error'
-        ? 'bg-[var(--danger)]'
-        : 'bg-[var(--muted)]'
+function StatusDot({
+  status,
+  registered,
+}: {
+  status: string
+  registered: boolean
+}) {
+  const label = !registered ? 'not registered' : status
+  const colorClass = !registered
+    ? 'bg-[var(--muted)]'
+    : status === 'working'
+      ? 'bg-[var(--success)] animate-pulse-dot'
+      : status === 'idle'
+        ? 'bg-[var(--warning)]'
+        : status === 'error'
+          ? 'bg-[var(--danger)]'
+          : 'bg-[var(--muted)]'
   return (
     <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[var(--muted)]">
       <span className={cn('h-2 w-2 rounded-full', colorClass)} />
-      {status}
+      {label}
     </span>
   )
 }
