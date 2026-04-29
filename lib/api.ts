@@ -71,6 +71,17 @@ export interface AgentStatusEntry {
   last_seen_at: string | null
 }
 
+export interface TaskLogDTO {
+  id: string
+  task_id: string
+  step: string
+  direction: string // 'request' | 'response' | 'info' | 'error'
+  payload: string
+  http_status: number | null
+  duration_ms: number | null
+  created_at: string
+}
+
 export interface CreateTaskPayload {
   title: string
   description?: string
@@ -104,6 +115,16 @@ export const api = {
     }),
   deleteTask: (id: string) =>
     tryFetch<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
+  getTaskLogs: (id: string, since?: string, limit = 200) => {
+    const qs = new URLSearchParams()
+    if (since) qs.set('since', since)
+    qs.set('limit', String(limit))
+    return tryFetch<TaskLogDTO[]>(
+      `/api/tasks/${id}/logs?${qs.toString()}`,
+      undefined,
+      [] as TaskLogDTO[]
+    )
+  },
   postActivity: (
     taskId: string,
     payload: {

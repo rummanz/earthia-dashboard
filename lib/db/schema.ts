@@ -121,6 +121,18 @@ CREATE TABLE IF NOT EXISTS planning_specs (
 );
 CREATE INDEX IF NOT EXISTS idx_planning_specs_task ON planning_specs(task_id);
 
+CREATE TABLE IF NOT EXISTS task_logs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  step TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  http_status INTEGER,
+  duration_ms INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_logs_task_created ON task_logs(task_id, created_at);
+
 CREATE TABLE IF NOT EXISTS prompt_templates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

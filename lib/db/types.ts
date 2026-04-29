@@ -88,6 +88,17 @@ export interface TaskDeliverableRow {
   created_at: string
 }
 
+export interface TaskLogRow {
+  id: string
+  task_id: string
+  step: string
+  direction: string // 'request' | 'response' | 'info' | 'error'
+  payload: string
+  http_status: number | null
+  duration_ms: number | null
+  created_at: string
+}
+
 export interface PromptTemplateRow {
   id: string
   name: string

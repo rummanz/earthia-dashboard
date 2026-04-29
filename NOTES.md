@@ -1,6 +1,159 @@
 # Earthia Dashboard — Build Notes
 
-## DB-backed content pipeline + scheduler + run-now (this commit)
+## Real generation pipeline + per-task logs + delete + real publish URLs (this commit)
+
+The placeholder lifecycle in `lib/scheduler/index.ts` was replaced with a real,
+provider-backed pipeline. Every kie.ai / upload-post HTTP call is captured into
+a new `task_logs` table and surfaced in the UI as a Logs tab. Tasks can now be
+deleted (row, logs, activities, media) and the social-icon row links to the
+actual published post URLs returned by upload-post (no more `example.com`).
+
+### Pipeline (`lib/scheduler/index.ts` → `lib/pipeline/`)
+
+1. **`generating`** → `lib/pipeline/generators/kie.ts`
+   - Image: `POST https://api.kie.ai/api/v1/jobs/createTask` (model defaults to
+     `nano-banana-pro`, aspect derived from `dimensions.ratio` or width/height,
+     output `png`). Polls `GET /api/v1/jobs/recordInfo?taskId=...` every 5s.
+   - Video / reel: `POST /api/v1/veo/generate` + `GET /api/v1/veo/record-info`,
+     interpreting `successFlag` (1=success, 2/3=failed).
+   - On success, downloads each asset to `data/media/<task_id>/slide-<n>.png`
+     (carousel: N defaults to 3 or `dimensions.slides`; image: 1) or
+     `video.mp4`, then sets `media_url` / `thumbnail_url` to the **served**
+     path `/api/media/<task_id>/<file>`.
+   - Per-asset cap: 6 min (image), 8 min (video). Whole-pipeline cap: 8 min.
+
+2. **`reviewing`** → MVP auto-approve (`review_score = 9`, threshold honored,
+   default 7). One activity logged: `Auto-review passed (placeholder)`. Real
+   LLM reviewer is a TODO; the seam is the `runPipeline` review block.
+
+3. **`approved`** → `lib/pipeline/publishers/upload-post.ts`
+   - Photos: multipart `POST /api/upload_photos` with `user=insta_business`,
+     `platform[]=...`, `photos[]=@...`, `title=...`. Profile name comes from
+     `UPLOAD_POST_PROFILE` (default `insta_business`).
+   - Video: `POST /api/upload_videos`. Text: `POST /api/upload_text`.
+   - Platform map: `instagram→instagram`, `tiktok→tiktok`, `youtube→youtube`,
+     `twitter|x→x`, `linkedin→linkedin`, `facebook→facebook`,
+     `pinterest→pinterest`, `threads→threads`, `bluesky→bluesky`, `reddit→reddit`.
+   - Per-platform URL extraction is tolerant: tries `post_url`, `shared_url`,
+     `permalink`, `url`, `share_url`, `video_url`, `tweet_url`, then
+     `data.*` / `response.*` recursively. Async results (`request_id` /
+     `job_id` / pending status) are followed via
+     `GET /api/uploadposts/status?request_id=...` for up to 60s.
+
+4. **`published`** when at least one platform succeeded; else **`failed`**.
+   - `published_to` is persisted as `{ platform: url | null }` and the social
+     icon row shows muted/non-clickable for `null`, accent + `<a target="_blank">`
+     for a real URL. The `https://example.com/...` placeholders are gone.
+
+### Robustness
+
+- Missing `KIE_API_KEY` → task fails with reason `KIE_API_KEY not configured`,
+  scheduler keeps running. Same for `UPLOAD_POST_API_KEY`.
+- `platforms: []` → publish phase is skipped; task ends at status `approved`
+  (with `media_url` set). This is the safe smoke-test path.
+- Provider errors are caught, truncated to 500 chars, logged as a `task_logs`
+  error row + `task_activities` error row, and broadcast over SSE.
+- One pipeline per task at a time (in-flight `Set<string>` on the scheduler
+  handle).
+
+### Per-task logs (`task_logs` table)
+
+New table, indexed on `(task_id, created_at)`:
+
+```
+task_logs (
+  id TEXT PK,
+  task_id TEXT,
+  step TEXT,            -- e.g. "kie.createTask", "kie.poll", "upload-post/upload_photos"
+  direction TEXT,       -- 'request' | 'response' | 'info' | 'error'
+  payload TEXT,         -- JSON-stringified, truncated to 64KB + …[truncated]
+  http_status INTEGER,
+  duration_ms INTEGER,
+  created_at TEXT
+)
+```
+
+Every provider HTTP call goes through `lib/pipeline/logged.ts → loggedFetch()`
+which:
+- redacts `Authorization` (and `X-API-Key`) headers in the logged request,
+- records the URL + method + (intent-only) body,
+- records the parsed JSON response (or raw text) with status + duration.
+
+API:
+- `GET /api/tasks/:id/logs?since=<iso>&limit=<n>` (default limit 200, max 1000).
+- No SSE log stream; the modal polls every 2s while open. SSE
+  `activity_logged` invalidates `['task-logs']` for free.
+
+UI: Content Preview Modal now has tabs (Overview / Logs). Each log entry shows
+step badge, direction glyph, timestamp, status code, duration, and the
+pretty-printed payload in a scrollable `<pre>` with a copy button.
+
+### Delete task
+
+- Row-level trash button on hover (`Trash2`) in the dashboard table; opens a
+  confirm dialog.
+- Same action available from the Content Preview Modal’s kebab menu.
+- `DELETE /api/tasks/:id` cascades to `task_activities`, `task_deliverables`,
+  `task_roles`, `task_logs`, `openclaw_sessions`, then best-effort removes
+  `data/media/<task_id>/`. Broadcasts `task_deleted` over SSE.
+
+### Files added
+
+```
+lib/pipeline/logged.ts                          # loggedFetch + redaction
+lib/pipeline/generators/kie.ts                  # generateImages, generateVideo
+lib/pipeline/publishers/upload-post.ts          # publishPhotos/Video/Text
+app/api/tasks/[id]/logs/route.ts                # GET task logs
+app/api/media/[taskId]/[file]/route.ts          # serve data/media files
+scripts/test-pipeline.ts                        # mocked-fetch state-machine test
+```
+
+### Files changed
+
+```
+lib/db/schema.ts          # +task_logs table
+lib/db/types.ts           # +TaskLogRow
+lib/db/repo.ts            # +createTaskLog/listTaskLogs, deleteTask cascades task_logs
+lib/scheduler/index.ts    # placeholder pipeline → real provider-backed pipeline
+lib/api.ts                # +getTaskLogs, +TaskLogDTO
+app/api/tasks/[id]/route.ts                     # DELETE removes data/media/<id>
+components/dashboard/content-preview-modal.tsx  # tabs + Logs panel + kebab delete
+components/dashboard/feed-table.tsx             # delete column + confirm dialog
+components/shared/sse-provider.tsx              # invalidate task-logs query
+```
+
+### Verification
+
+- `npm run build` → exit 0.
+- `npx tsx scripts/test-pipeline.ts` (mocks `fetch` for both kie + upload-post):
+  asserts `published` status, per-platform URLs in `published_to`, all
+  required activity transitions, kie + upload-post log steps, and that no
+  raw API key leaks into log payloads.
+- Live smoke against `npm run dev` with real `KIE_API_KEY`:
+  - `POST /api/tasks` with `platforms: []` → task lands at `approved` after
+    ~50s; `data/media/<id>/slide-1.png` is a real 1.6MB PNG; logs include
+    `kie.createTask` (200) + ~10 `kie.poll` (200) + 2 `kie.download` info
+    rows + `pipeline.skip_publish` info.
+  - `DELETE /api/tasks/<id>` → `200 {ok:true}`, follow-up `GET` → 404,
+    `data/media/<id>/` is gone.
+
+### Skipped / TODO
+
+- **Refresh published URLs** button (history fallback for older rows that
+  predate this change) is not implemented — deferred. Path of least surprise:
+  `published_to[platform]: null` already renders as muted, non-clickable.
+- **LLM reviewer** is still a placeholder (auto-9). Hook is the review stage
+  in `runPipeline()`.
+- **SSE log stream** (`/api/tasks/:id/logs/stream`) was skipped in favor of
+  2s polling on the open modal. SSE `activity_logged` already pokes the
+  query key when a new log lands, so polling is a fallback.
+- **`next.config.mjs` warning** about `serverExternalPackages` is harmless
+  for Next 14 (the option exists but is named differently); not in scope.
+
+---
+
+
+## DB-backed content pipeline + scheduler + run-now (previous commit)
 
 This pass cuts every remaining mock seed out of the runtime UI and moves the
 entire content-item lifecycle into SQLite, behind a 10s scheduler tick.

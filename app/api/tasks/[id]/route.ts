@@ -1,3 +1,5 @@
+import { rm } from 'fs/promises'
+import { resolve as resolvePath } from 'path'
 import { NextRequest, NextResponse } from 'next/server'
 import {
   createEvent,
@@ -53,6 +55,15 @@ export async function DELETE(
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
   deleteTask(params.id)
+
+  // Best-effort: remove on-disk media for the task.
+  const mediaDir = resolvePath(process.cwd(), 'data/media', params.id)
+  try {
+    await rm(mediaDir, { recursive: true, force: true })
+  } catch {
+    // ignore
+  }
+
   createEvent({
     type: 'task_deleted',
     message: `Task deleted: ${existing.title}`,

@@ -12,9 +12,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn, formatDate, isFuture } from '@/lib/utils'
-import { Plus, Play, Image as ImageIcon, Layers } from 'lucide-react'
+import { Plus, Play, Image as ImageIcon, Layers, Trash2 } from 'lucide-react'
 import { ContentPreviewModal } from './content-preview-modal'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 
 const ALL_STATUSES: ContentStatus[] = [
   'queued', 'generating', 'reviewing', 'approved', 'rejected', 'published', 'failed',
@@ -45,6 +47,14 @@ export function FeedTable() {
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<'date' | 'score' | 'status'>('date')
   const [previewItem, setPreviewItem] = useState<ContentItem | null>(null)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const qc = useQueryClient()
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api.deleteTask(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+    },
+  })
 
   const filtered = useMemo(() => {
     let list = items
@@ -171,6 +181,9 @@ export function FeedTable() {
                 <th className="text-left px-4 py-2 section-label hidden lg:table-cell">Score</th>
                 <th className="text-left px-4 py-2 section-label">Status</th>
                 <th className="text-left px-4 py-2 section-label hidden md:table-cell">Published</th>
+                <th className="text-left px-4 py-2 section-label w-12">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -181,6 +194,7 @@ export function FeedTable() {
                   index={idx + 1}
                   threshold={threshold}
                   onClick={() => setPreviewItem(item)}
+                  onDelete={() => setDeleteId(item.id)}
                 />
               ))}
             </tbody>
@@ -188,7 +202,41 @@ export function FeedTable() {
         </div>
       )}
 
-      <ContentPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+      <ContentPreviewModal
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+        onDelete={(id) => {
+          setPreviewItem(null)
+          setDeleteId(id)
+        }}
+      />
+
+      <Dialog open={!!deleteId} onOpenChange={(v) => !v && setDeleteId(null)}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>Delete this task?</DialogTitle>
+          <p className="text-sm text-[var(--muted)] mt-2">
+            This will remove the row, its logs, activities, and any local media files. This
+            cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2 mt-6">
+            <Button variant="outline" onClick={() => setDeleteId(null)} disabled={deleteMut.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (!deleteId) return
+                deleteMut.mutate(deleteId, {
+                  onSettled: () => setDeleteId(null),
+                })
+              }}
+              disabled={deleteMut.isPending}
+            >
+              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -198,11 +246,13 @@ function FeedRow({
   index,
   threshold,
   onClick,
+  onDelete,
 }: {
   item: ContentItem
   index: number
   threshold: number
   onClick: () => void
+  onDelete: () => void
 }) {
   const dateStr = item.scheduledAt || item.publishedAt || item.createdAt
   const isUpcoming = isFuture(dateStr)
@@ -213,7 +263,7 @@ function FeedRow({
     <tr
       onClick={onClick}
       className={cn(
-        'border-b border-[var(--border)] hover:bg-[var(--surface)] cursor-pointer transition-colors',
+        'group border-b border-[var(--border)] hover:bg-[var(--surface)] cursor-pointer transition-colors',
         rejected && 'border-l-2 border-l-[var(--danger)]',
         published && 'border-l-2 border-l-[var(--accent)]',
         (item.status === 'generating' || item.status === 'reviewing') && 'animate-pulse-dot'
@@ -243,6 +293,19 @@ function FeedRow({
       </td>
       <td className="px-4 py-3 hidden md:table-cell">
         <SocialIconRow platforms={item.platforms} publishedPosts={item.publishedPosts} />
+      </td>
+      <td className="px-4 py-3 text-right">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity p-1.5 rounded text-[var(--muted)] hover:text-[var(--danger)] hover:bg-[var(--background)]"
+          title="Delete task"
+          aria-label="Delete task"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       </td>
     </tr>
   )

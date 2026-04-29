@@ -10,10 +10,13 @@ import type {
   TaskActivityRow,
   TaskDeliverableRow,
   TaskInsert,
+  TaskLogRow,
   TaskPriority,
   TaskRow,
   TaskStatus,
 } from './types'
+
+const MAX_LOG_PAYLOAD_BYTES = 64 * 1024
 
 // ---------------- tasks ----------------
 
@@ -186,11 +189,81 @@ export function deleteTask(id: string): boolean {
     db.prepare('DELETE FROM task_activities WHERE task_id = ?').run(tid)
     db.prepare('DELETE FROM task_deliverables WHERE task_id = ?').run(tid)
     db.prepare('DELETE FROM task_roles WHERE task_id = ?').run(tid)
+    db.prepare('DELETE FROM task_logs WHERE task_id = ?').run(tid)
     db.prepare('DELETE FROM openclaw_sessions WHERE task_id = ?').run(tid)
     const r = db.prepare('DELETE FROM tasks WHERE id = ?').run(tid)
     return r.changes > 0
   })
   return tx(id)
+}
+
+// ---------------- task_logs ----------------
+
+export interface TaskLogInsert {
+  task_id: string
+  step: string
+  direction: 'request' | 'response' | 'info' | 'error'
+  payload: unknown
+  http_status?: number | null
+  duration_ms?: number | null
+}
+
+function truncatePayload(raw: unknown): string {
+  let s: string
+  if (typeof raw === 'string') s = raw
+  else {
+    try {
+      s = JSON.stringify(raw, null, 2)
+    } catch {
+      s = String(raw)
+    }
+  }
+  if (Buffer.byteLength(s, 'utf8') <= MAX_LOG_PAYLOAD_BYTES) return s
+  // Slice on bytes by re-encoding.
+  const buf = Buffer.from(s, 'utf8').subarray(0, MAX_LOG_PAYLOAD_BYTES)
+  return buf.toString('utf8') + '\u2026[truncated]'
+}
+
+export function createTaskLog(input: TaskLogInsert): TaskLogRow {
+  const row: TaskLogRow = {
+    id: randomUUID(),
+    task_id: input.task_id,
+    step: input.step,
+    direction: input.direction,
+    payload: truncatePayload(input.payload),
+    http_status: input.http_status ?? null,
+    duration_ms: input.duration_ms ?? null,
+    created_at: nowIso(),
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO task_logs (id, task_id, step, direction, payload, http_status, duration_ms, created_at)
+       VALUES (@id, @task_id, @step, @direction, @payload, @http_status, @duration_ms, @created_at)`
+    )
+    .run(row)
+  return row
+}
+
+export function listTaskLogs(
+  task_id: string,
+  opts: { since?: string; limit?: number } = {}
+): TaskLogRow[] {
+  const db = getDb()
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 1000))
+  if (opts.since) {
+    return db
+      .prepare(
+        `SELECT * FROM task_logs WHERE task_id = ? AND datetime(created_at) > datetime(?)
+         ORDER BY datetime(created_at) ASC LIMIT ?`
+      )
+      .all(task_id, opts.since, limit) as TaskLogRow[]
+  }
+  return db
+    .prepare(
+      `SELECT * FROM task_logs WHERE task_id = ?
+       ORDER BY datetime(created_at) ASC LIMIT ?`
+    )
+    .all(task_id, limit) as TaskLogRow[]
 }
 
 export function listDueTasks(limit = 5): TaskRow[] {

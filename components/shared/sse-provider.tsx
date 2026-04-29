@@ -26,6 +26,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           }
           if (evt.type === 'activity_logged') {
             qc.invalidateQueries({ queryKey: ['activities'] })
+            qc.invalidateQueries({ queryKey: ['task-logs'] })
           }
           if (evt.type === 'deliverable_added') {
             qc.invalidateQueries({ queryKey: ['deliverables'] })
