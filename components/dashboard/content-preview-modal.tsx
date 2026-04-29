@@ -1,23 +1,23 @@
 'use client'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { useContentStore, useSettingsStore } from '@/lib/store'
+import { useSettingsStore } from '@/lib/store'
 import { StatusBadge } from '@/components/shared/status-badge'
 import { ScoreBar } from '@/components/shared/score-bar'
 import { SocialIconRow } from '@/components/shared/social-icon'
+import type { ContentItem } from '@/lib/types'
 import { formatDate } from '@/lib/utils'
 import { Image as ImageIcon, Play } from 'lucide-react'
 
 interface Props {
-  id: string | null
+  item: ContentItem | null
   onClose: () => void
 }
 
-export function ContentPreviewModal({ id, onClose }: Props) {
-  const item = useContentStore((s) => s.items.find((i) => i.id === id))
+export function ContentPreviewModal({ item, onClose }: Props) {
   const threshold = useSettingsStore((s) => s.settings.reviewThreshold)
 
   return (
-    <Dialog open={!!id} onOpenChange={(v) => !v && onClose()}>
+    <Dialog open={!!item} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-5xl">
         <DialogTitle>{item?.templateName ?? 'Content'}</DialogTitle>
         {item && (

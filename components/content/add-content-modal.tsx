@@ -1,28 +1,82 @@
 'use client'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useUIStore, useContentStore, useTemplateStore } from '@/lib/store'
+import { useUIStore } from '@/lib/store'
 import { CONTENT_TYPES, SOCIAL_PLATFORMS, DIMENSION_PRESETS, PLATFORM_SUPPORT } from '@/lib/constants'
-import type { ContentType, SocialPlatform, ScheduleType, ContentItem } from '@/lib/types'
-import { cn, uid, parseVariables } from '@/lib/utils'
+import type { ContentType, SocialPlatform } from '@/lib/types'
+import { cn, parseVariables } from '@/lib/utils'
 import { SocialIcon } from '@/components/shared/social-icon'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import { api } from '@/lib/api'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 const STEPS = ['Type & Dimensions', 'Platforms', 'Template', 'Schedule']
+
+// "now" first by design — it's the most common path and the default selection.
+type ScheduleKind = 'now' | 'once' | 'hourly' | 'daily' | 'weekly'
+const SCHEDULE_KINDS: ScheduleKind[] = ['now', 'once', 'hourly', 'daily', 'weekly']
+
+const SCHEDULE_DESCRIPTIONS: Record<ScheduleKind, string> = {
+  now: 'Execute immediately. Runs once as soon as you confirm.',
+  once: 'Run a single time at a specific date and time.',
+  hourly: 'Run on an hourly cadence.',
+  daily: 'Run every day at a fixed time.',
+  weekly: 'Run on chosen days of the week at a fixed time.',
+}
+
+function expandPrompt(
+  body: string,
+  values: Record<string, string>
+): string {
+  return body.replace(/\{([a-zA-Z0-9_]+)\}/g, (m, name: string) =>
+    values[name] && values[name].trim() ? values[name] : m
+  )
+}
+
+function dimensionRatio(w: number, h: number): string {
+  if (w === h) return '1:1'
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+  const g = gcd(w, h)
+  return `${w / g}:${h / g}`
+}
 
 export function AddContentModal() {
   const open = useUIStore((s) => s.addContentOpen)
   const setOpen = useUIStore((s) => s.setAddContentOpen)
-  const addItem = useContentStore((s) => s.add)
-  const templates = useTemplateStore((s) => s.templates)
   const qc = useQueryClient()
+
+  const { data: templates = [] } = useQuery({
+    queryKey: ['prompts'],
+    queryFn: () => api.listPrompts(),
+    enabled: open,
+  })
+
+  const create = useMutation({
+    mutationFn: (payload: Parameters<typeof api.createTask>[0]) =>
+      api.createTask(payload),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      // best-effort activity log
+      void api
+        .postActivity(task.id, {
+          activity_type: 'queued',
+          message: 'Queued from Add Content modal',
+        })
+        .catch(() => {})
+      toast.success('Content queued')
+      close()
+    },
+    onError: (err: unknown) => {
+      toast.error(
+        `Failed to queue: ${err instanceof Error ? err.message : 'unknown'}`
+      )
+    },
+  })
 
   const [step, setStep] = useState(0)
   const [contentType, setContentType] = useState<ContentType | null>(null)
@@ -32,13 +86,16 @@ export function AddContentModal() {
   const [platforms, setPlatforms] = useState<SocialPlatform[]>([])
   const [templateId, setTemplateId] = useState<string>('')
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
-  const [scheduleType, setScheduleType] = useState<ScheduleType>('once')
+  const [scheduleKind, setScheduleKind] = useState<ScheduleKind>('now')
   const [scheduleAt, setScheduleAt] = useState<string>('')
   const [intervalHours, setIntervalHours] = useState<string>('1')
   const [timeOfDay, setTimeOfDay] = useState<string>('09:00')
   const [daysOfWeek, setDaysOfWeek] = useState<number[]>([1, 3, 5])
 
-  const selectedTemplate = templates.find((t) => t.id === templateId)
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === templateId) ?? null,
+    [templates, templateId]
+  )
   const detectedVars = selectedTemplate ? parseVariables(selectedTemplate.body) : []
 
   function reset() {
@@ -50,7 +107,7 @@ export function AddContentModal() {
     setPlatforms([])
     setTemplateId('')
     setVariableValues({})
-    setScheduleType('once')
+    setScheduleKind('now')
     setScheduleAt('')
   }
 
@@ -83,76 +140,56 @@ export function AddContentModal() {
     setStep((s) => Math.max(s - 1, 0))
   }
 
-  async function confirm() {
+  function confirm() {
     if (!contentType || !templateId || !selectedTemplate) {
       toast.error('Form incomplete')
       return
     }
     const finalDim = useCustom
-      ? { width: parseInt(customDim.w, 10) || 1080, height: parseInt(customDim.h, 10) || 1080 }
+      ? {
+          width: parseInt(customDim.w, 10) || 1080,
+          height: parseInt(customDim.h, 10) || 1080,
+        }
       : { width: dim!.w, height: dim!.h }
 
-    const startAt = scheduleAt || new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    const ratio = dimensionRatio(finalDim.width, finalDim.height)
 
-    const newItem: ContentItem = {
-      id: uid('c'),
-      templateId,
-      templateName: selectedTemplate.name,
-      generatedPrompt: '(pending generation)',
-      contentType,
-      dimensions: finalDim,
+    let schedule_at: string | undefined
+    const meta: Record<string, unknown> = {}
+    if (scheduleKind === 'now') {
+      schedule_at = new Date().toISOString()
+    } else if (scheduleKind === 'once') {
+      schedule_at = scheduleAt
+        ? new Date(scheduleAt).toISOString()
+        : new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    } else if (scheduleKind === 'hourly') {
+      const h = parseInt(intervalHours, 10) || 1
+      meta.intervalHours = h
+      schedule_at = new Date().toISOString()
+    } else if (scheduleKind === 'daily') {
+      meta.timeOfDay = timeOfDay
+      schedule_at = new Date().toISOString()
+    } else if (scheduleKind === 'weekly') {
+      meta.timeOfDay = timeOfDay
+      meta.daysOfWeek = daysOfWeek
+      schedule_at = new Date().toISOString()
+    }
+
+    const promptBody = expandPrompt(selectedTemplate.body, variableValues)
+
+    create.mutate({
+      title: selectedTemplate.name,
+      description: promptBody,
+      priority: 'normal',
+      content_type: contentType,
+      dimensions: { ...finalDim, ratio },
       platforms,
-      status: 'queued',
-      schedule: {
-        type: scheduleType,
-        startAt,
-        intervalHours: scheduleType === 'hourly' ? parseInt(intervalHours, 10) : undefined,
-        timeOfDay: scheduleType === 'daily' || scheduleType === 'weekly' ? timeOfDay : undefined,
-        daysOfWeek: scheduleType === 'weekly' ? daysOfWeek : undefined,
-      },
-      createdAt: new Date().toISOString(),
-      scheduledAt: startAt,
-    }
-    // Optimistic UI update for the existing local store.
-    addItem(newItem)
-    // Persist to Mission Control backend as a Task. Best-effort.
-    try {
-      const description = JSON.stringify(
-        {
-          template_id: templateId,
-          template_name: selectedTemplate.name,
-          content_type: contentType,
-          dimensions: finalDim,
-          platforms,
-          variables: variableValues,
-          schedule: newItem.schedule,
-        },
-        null,
-        2
-      )
-      const task = await api.createTask({
-        title: selectedTemplate.name,
-        description,
-        priority: 'normal',
-      })
-      await api
-        .postActivity(task.id, {
-          activity_type: 'updated',
-          message: 'Queued from Add Content modal',
-          metadata: JSON.stringify({
-            content_type: contentType,
-            platforms,
-          }),
-        })
-        .catch(() => {})
-      qc.invalidateQueries({ queryKey: ['tasks'] })
-      toast.success('Content queued')
-    } catch (err) {
-      toast.warning(
-        `Saved locally; backend persist failed: ${err instanceof Error ? err.message : 'unknown'}`
-      )
-    }
-    close()
+      template_id: templateId,
+      prompt_body: promptBody,
+      schedule_kind: scheduleKind,
+      schedule_at,
+      schedule_meta: Object.keys(meta).length ? meta : undefined,
+    })
   }
 
   return (
@@ -309,18 +346,24 @@ export function AddContentModal() {
         {step === 2 && (
           <div className="space-y-4">
             <div className="section-label">Prompt Template</div>
-            <Select value={templateId} onValueChange={setTemplateId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Choose a template…" />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {templates.length === 0 ? (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--background)] p-4 text-sm text-[var(--muted)]">
+                No prompt templates yet. Create one on the Prompts page first.
+              </div>
+            ) : (
+              <Select value={templateId} onValueChange={setTemplateId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a template…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
 
             {selectedTemplate && (
               <>
@@ -356,27 +399,32 @@ export function AddContentModal() {
           <div className="space-y-4">
             <div className="section-label">Schedule</div>
             <RadioGroup
-              value={scheduleType}
-              onValueChange={(v) => setScheduleType(v as ScheduleType)}
-              className="grid grid-cols-2 gap-2"
+              value={scheduleKind}
+              onValueChange={(v) => setScheduleKind(v as ScheduleKind)}
+              className="grid grid-cols-1 gap-2"
             >
-              {(['once', 'hourly', 'daily', 'weekly'] as ScheduleType[]).map((t) => (
+              {SCHEDULE_KINDS.map((t) => (
                 <label
                   key={t}
                   className={cn(
-                    'flex items-center gap-3 p-3 rounded-md border cursor-pointer',
-                    scheduleType === t
+                    'flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors',
+                    scheduleKind === t
                       ? 'border-[var(--accent)] bg-[var(--accent)]/10'
-                      : 'border-[var(--border)]'
+                      : 'border-[var(--border)] hover:border-[var(--muted)]'
                   )}
                 >
-                  <RadioGroupItem value={t} />
-                  <span className="text-sm font-mono uppercase">{t}</span>
+                  <RadioGroupItem value={t} className="mt-0.5" />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-mono uppercase">{t}</span>
+                    <span className="text-xs text-[var(--muted)]">
+                      {SCHEDULE_DESCRIPTIONS[t]}
+                    </span>
+                  </div>
                 </label>
               ))}
             </RadioGroup>
 
-            {scheduleType === 'once' && (
+            {scheduleKind === 'once' && (
               <div>
                 <label className="section-label block mb-2">Date & Time</label>
                 <Input
@@ -386,7 +434,7 @@ export function AddContentModal() {
                 />
               </div>
             )}
-            {scheduleType === 'hourly' && (
+            {scheduleKind === 'hourly' && (
               <div className="flex gap-2 items-center">
                 <span className="text-sm">Every</span>
                 <Input
@@ -399,7 +447,7 @@ export function AddContentModal() {
                 <span className="text-sm">hour(s)</span>
               </div>
             )}
-            {(scheduleType === 'daily' || scheduleType === 'weekly') && (
+            {(scheduleKind === 'daily' || scheduleKind === 'weekly') && (
               <div>
                 <label className="section-label block mb-2">Time of Day</label>
                 <Input
@@ -410,7 +458,7 @@ export function AddContentModal() {
                 />
               </div>
             )}
-            {scheduleType === 'weekly' && (
+            {scheduleKind === 'weekly' && (
               <div>
                 <label className="section-label block mb-2">Days of Week</label>
                 <div className="flex gap-2">
@@ -440,13 +488,42 @@ export function AddContentModal() {
             )}
 
             <div className="text-xs font-mono text-[var(--muted)] p-3 rounded-md bg-[var(--background)] border border-[var(--border)]">
-              Will generate and post on{' '}
-              <span className="text-[var(--accent)]">
-                {scheduleType === 'once' && (scheduleAt || 'next hour')}
-                {scheduleType === 'hourly' && `every ${intervalHours}h`}
-                {scheduleType === 'daily' && `daily at ${timeOfDay}`}
-                {scheduleType === 'weekly' && `${daysOfWeek.length} day(s)/week at ${timeOfDay}`}
-              </span>
+              {scheduleKind === 'now' && (
+                <span>
+                  Will run{' '}
+                  <span className="text-[var(--accent)]">immediately</span>.
+                </span>
+              )}
+              {scheduleKind === 'once' && (
+                <span>
+                  Will run once on{' '}
+                  <span className="text-[var(--accent)]">
+                    {scheduleAt || 'next hour'}
+                  </span>
+                  .
+                </span>
+              )}
+              {scheduleKind === 'hourly' && (
+                <span>
+                  Will run{' '}
+                  <span className="text-[var(--accent)]">every {intervalHours}h</span>.
+                </span>
+              )}
+              {scheduleKind === 'daily' && (
+                <span>
+                  Will run{' '}
+                  <span className="text-[var(--accent)]">daily at {timeOfDay}</span>.
+                </span>
+              )}
+              {scheduleKind === 'weekly' && (
+                <span>
+                  Will run{' '}
+                  <span className="text-[var(--accent)]">
+                    {daysOfWeek.length} day(s)/week at {timeOfDay}
+                  </span>
+                  .
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -469,8 +546,8 @@ export function AddContentModal() {
                 <ChevronRight className="h-4 w-4" />
               </Button>
             ) : (
-              <Button size="sm" onClick={confirm}>
-                Confirm & Queue
+              <Button size="sm" onClick={confirm} disabled={create.isPending}>
+                {create.isPending ? 'Queueing…' : 'Confirm & Queue'}
               </Button>
             )}
           </div>

@@ -1,8 +1,9 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { useContentStore, useUIStore, useSettingsStore } from '@/lib/store'
+import { useUIStore, useSettingsStore } from '@/lib/store'
+import { taskToContentItem } from '@/lib/task-mapper'
 import type { ContentItem, ContentStatus, SocialPlatform } from '@/lib/types'
 import { StatusBadge } from '@/components/shared/status-badge'
 import { ScoreBar } from '@/components/shared/score-bar'
@@ -23,72 +24,27 @@ const ALL_PLATFORMS: SocialPlatform[] = [
   'instagram', 'tiktok', 'youtube', 'twitter', 'linkedin', 'facebook', 'pinterest',
 ]
 
-function statusToContent(s: string): ContentStatus {
-  switch (s) {
-    case 'queued':
-      return 'queued'
-    case 'in_progress':
-    case 'assigned':
-      return 'generating'
-    case 'testing':
-    case 'review':
-      return 'reviewing'
-    case 'done':
-      return 'published'
-    case 'failed':
-      return 'failed'
-    case 'cancelled':
-      return 'rejected'
-    default:
-      return 'queued'
-  }
-}
-
 export function FeedTable() {
-  const items = useContentStore((s) => s.items)
-  const upsert = useContentStore((s) => s.update)
-  const add = useContentStore((s) => s.add)
   const setAddOpen = useUIStore((s) => s.setAddContentOpen)
   const threshold = useSettingsStore((s) => s.settings.reviewThreshold)
 
-  // Pull tasks from the Mission Control backend and merge them into the local store.
+  // Source of truth: /api/tasks. SSE invalidates this key on backend events.
   const { data: tasks } = useQuery({
     queryKey: ['tasks'],
     queryFn: () => api.listTasks(),
     refetchInterval: 15_000,
   })
 
-  useEffect(() => {
-    if (!tasks) return
-    for (const t of tasks) {
-      const id = `task:${t.id}`
-      const existing = items.find((i) => i.id === id)
-      const merged: ContentItem = {
-        id,
-        templateId: t.id,
-        templateName: t.title,
-        generatedPrompt: t.description ?? '',
-        contentType: 'image',
-        dimensions: { width: 1080, height: 1080 },
-        platforms: [],
-        status: statusToContent(t.status),
-        schedule: { type: 'once', startAt: t.created_at },
-        createdAt: t.created_at,
-        scheduledAt: t.created_at,
-      }
-      if (existing) {
-        upsert(id, merged)
-      } else {
-        add(merged)
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks])
+  const items: ContentItem[] = useMemo(
+    () => (tasks ? tasks.map(taskToContentItem) : []),
+    [tasks]
+  )
+
   const [statusFilter, setStatusFilter] = useState<ContentStatus[]>([])
   const [platformFilter, setPlatformFilter] = useState<SocialPlatform[]>([])
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<'date' | 'score' | 'status'>('date')
-  const [previewId, setPreviewId] = useState<string | null>(null)
+  const [previewItem, setPreviewItem] = useState<ContentItem | null>(null)
 
   const filtered = useMemo(() => {
     let list = items
@@ -224,7 +180,7 @@ export function FeedTable() {
                   item={item}
                   index={idx + 1}
                   threshold={threshold}
-                  onClick={() => setPreviewId(item.id)}
+                  onClick={() => setPreviewItem(item)}
                 />
               ))}
             </tbody>
@@ -232,7 +188,7 @@ export function FeedTable() {
         </div>
       )}
 
-      <ContentPreviewModal id={previewId} onClose={() => setPreviewId(null)} />
+      <ContentPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
     </div>
   )
 }

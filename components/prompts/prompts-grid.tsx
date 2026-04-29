@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
-import { useTemplateStore } from '@/lib/store'
-import type { PromptTemplate, ContentType } from '@/lib/types'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type PromptTemplateDTO } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -18,9 +18,24 @@ import {
 import { toast } from 'sonner'
 
 export function PromptsGrid() {
-  const templates = useTemplateStore((s) => s.templates)
-  const remove = useTemplateStore((s) => s.remove)
-  const [editing, setEditing] = useState<PromptTemplate | null>(null)
+  const qc = useQueryClient()
+  const { data: templates = [], isLoading } = useQuery({
+    queryKey: ['prompts'],
+    queryFn: () => api.listPrompts(),
+    refetchInterval: 30_000,
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deletePrompt(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['prompts'] })
+      toast.success('Template deleted')
+    },
+    onError: (err: unknown) => {
+      toast.error(`Delete failed: ${err instanceof Error ? err.message : 'unknown'}`)
+    },
+  })
+
+  const [editing, setEditing] = useState<PromptTemplateDTO | null>(null)
   const [creating, setCreating] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const deleteTarget = templates.find((t) => t.id === deleteId)
@@ -40,16 +55,28 @@ export function PromptsGrid() {
         </Button>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
-        {templates.map((tpl) => (
-          <TemplateCard
-            key={tpl.id}
-            tpl={tpl}
-            onEdit={() => setEditing(tpl)}
-            onDelete={() => setDeleteId(tpl.id)}
-          />
-        ))}
-      </div>
+      {!isLoading && templates.length === 0 ? (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-12 text-center">
+          <p className="text-[var(--muted)] mb-4">
+            No prompt templates yet. Create one to get started.
+          </p>
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" />
+            New Template
+          </Button>
+        </div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          {templates.map((tpl) => (
+            <TemplateCard
+              key={tpl.id}
+              tpl={tpl}
+              onEdit={() => setEditing(tpl)}
+              onDelete={() => setDeleteId(tpl.id)}
+            />
+          ))}
+        </div>
+      )}
 
       {(creating || editing) && (
         <TemplateEditor
@@ -78,8 +105,7 @@ export function PromptsGrid() {
               size="sm"
               onClick={() => {
                 if (deleteId) {
-                  remove(deleteId)
-                  toast.success('Template deleted')
+                  remove.mutate(deleteId)
                   setDeleteId(null)
                 }
               }}
@@ -98,7 +124,7 @@ function TemplateCard({
   onEdit,
   onDelete,
 }: {
-  tpl: PromptTemplate
+  tpl: PromptTemplateDTO
   onEdit: () => void
   onDelete: () => void
 }) {
@@ -111,7 +137,7 @@ function TemplateCard({
       <CardContent className="p-5 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-wrap gap-1">
-            {tpl.contentTypes.map((ct: ContentType) => (
+            {tpl.contentTypes.map((ct) => (
               <Badge key={ct} variant="outline">
                 {ct}
               </Badge>

@@ -1,11 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
-import type { PromptTemplate, ContentType } from '@/lib/types'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import type { ContentType } from '@/lib/types'
+import { api, type PromptTemplateDTO } from '@/lib/api'
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Input, Textarea } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { CONTENT_TYPES } from '@/lib/constants'
-import { useTemplateStore } from '@/lib/store'
 import { parseVariables } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -14,15 +15,46 @@ export function TemplateEditor({
   template,
   onClose,
 }: {
-  template: PromptTemplate | null
+  template: PromptTemplateDTO | null
   onClose: () => void
 }) {
-  const add = useTemplateStore((s) => s.add)
-  const update = useTemplateStore((s) => s.update)
+  const qc = useQueryClient()
+
+  const create = useMutation({
+    mutationFn: (payload: {
+      name: string
+      body: string
+      contentTypes: ContentType[]
+      toneHints: string | null
+      negativePrompt: string | null
+      variables: Array<{ name: string; description?: string }>
+    }) => api.createPrompt(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['prompts'] })
+      toast.success('Template created')
+      onClose()
+    },
+    onError: (err: unknown) =>
+      toast.error(`Create failed: ${err instanceof Error ? err.message : 'unknown'}`),
+  })
+
+  const update = useMutation({
+    mutationFn: (args: { id: string; patch: Partial<PromptTemplateDTO> }) =>
+      api.updatePrompt(args.id, args.patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['prompts'] })
+      toast.success('Template updated')
+      onClose()
+    },
+    onError: (err: unknown) =>
+      toast.error(`Update failed: ${err instanceof Error ? err.message : 'unknown'}`),
+  })
 
   const [name, setName] = useState(template?.name ?? '')
   const [body, setBody] = useState(template?.body ?? '')
-  const [contentTypes, setContentTypes] = useState<ContentType[]>(template?.contentTypes ?? ['image'])
+  const [contentTypes, setContentTypes] = useState<ContentType[]>(
+    (template?.contentTypes as ContentType[] | undefined) ?? ['image']
+  )
   const [toneHints, setToneHints] = useState(template?.toneHints ?? '')
   const [negativePrompt, setNegativePrompt] = useState(template?.negativePrompt ?? '')
   const [varDescriptions, setVarDescriptions] = useState<Record<string, string>>(
@@ -44,30 +76,26 @@ export function TemplateEditor({
       toast.error('Name and body are required')
       return
     }
-    const variables = detected.map((n) => ({ name: n, description: varDescriptions[n] || undefined }))
-    if (template) {
-      update(template.id, {
-        name,
-        body,
-        contentTypes,
-        toneHints: toneHints || undefined,
-        negativePrompt: negativePrompt || undefined,
-        variables,
-      })
-      toast.success('Template updated')
-    } else {
-      add({
-        name,
-        body,
-        contentTypes,
-        toneHints: toneHints || undefined,
-        negativePrompt: negativePrompt || undefined,
-        variables,
-      })
-      toast.success('Template created')
+    const variables = detected.map((n) => ({
+      name: n,
+      description: varDescriptions[n] || undefined,
+    }))
+    const payload = {
+      name,
+      body,
+      contentTypes,
+      toneHints: toneHints || null,
+      negativePrompt: negativePrompt || null,
+      variables,
     }
-    onClose()
+    if (template) {
+      update.mutate({ id: template.id, patch: payload })
+    } else {
+      create.mutate(payload)
+    }
   }
+
+  const saving = create.isPending || update.isPending
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -149,11 +177,11 @@ export function TemplateEditor({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={onClose}>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button size="sm" onClick={save}>
-            Save
+          <Button size="sm" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
           </Button>
         </DialogFooter>
       </DialogContent>

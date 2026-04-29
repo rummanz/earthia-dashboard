@@ -1,35 +1,26 @@
-import type {
-  AppSettings,
-  ContentItem,
-  PromptTemplate,
-  AgentStatus,
-} from './types'
-import { MOCK_CONTENT, MOCK_SETTINGS, MOCK_TEMPLATES } from './mock-data'
+import type { AppSettings } from './types'
 
-// Default to same-origin Next.js API (proxies to OpenClaw Gateway). Override via env.
+// Same-origin Next.js API by default. Override base URL with env if needed.
+// MOCK_MODE no longer returns fake content; it just forces empty results so
+// the UI renders its empty states without the network even being attempted.
 const API_URL = process.env.NEXT_PUBLIC_OPENCLAW_API_URL ?? ''
 const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_MODE === 'true'
 
 async function tryFetch<T>(path: string, init?: RequestInit, fallback?: T): Promise<T> {
   if (MOCK_MODE) {
-    if (fallback === undefined) throw new Error(`No mock fallback for ${path}`)
+    if (fallback === undefined) throw new Error(`No fallback for ${path} in MOCK_MODE`)
     return fallback
   }
-  try {
-    const res = await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-      cache: 'no-store',
-    })
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-    return (await res.json()) as T
-  } catch (err) {
-    if (fallback !== undefined) return fallback
-    throw err
-  }
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return (await res.json()) as T
 }
 
 export interface TaskRow {
@@ -41,106 +32,78 @@ export interface TaskRow {
   assigned_agent_id: string | null
   created_at: string
   updated_at: string
+  content_type: string | null
+  dimensions: string | null
+  platforms: string | null
+  template_id: string | null
+  prompt_body: string | null
+  review_score: number | null
+  reviewer_notes: string | null
+  schedule_kind: string | null
+  schedule_at: string | null
+  schedule_meta: string | null
+  published_to: string | null
+  next_run_at: string | null
+  media_url: string | null
+  thumbnail_url: string | null
+  published_at: string | null
+}
+
+export interface PromptTemplateDTO {
+  id: string
+  name: string
+  body: string
+  contentTypes: string[]
+  toneHints: string | null
+  negativePrompt: string | null
+  variables: Array<{ name: string; description?: string }>
+  usageCount: number
+  lastUsedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentStatusEntry {
+  id: string
+  name: string
+  status: string
+  model: string | null
+  last_seen_at: string | null
+}
+
+export interface CreateTaskPayload {
+  title: string
+  description?: string
+  priority?: string
+  assigned_agent_id?: string | null
+  business_id?: string | null
+  workspace_id?: string | null
+  due_date?: string | null
+  content_type?: string
+  dimensions?: { width: number; height: number; ratio?: string }
+  platforms?: string[]
+  template_id?: string
+  prompt_body?: string
+  schedule_kind?: 'now' | 'once' | 'hourly' | 'daily' | 'weekly'
+  schedule_at?: string
+  schedule_meta?: Record<string, unknown>
 }
 
 export const api = {
-  // Content
-  listContent: () => tryFetch<ContentItem[]>('/api/content', undefined, MOCK_CONTENT),
-  getContent: (id: string) =>
-    tryFetch<ContentItem | undefined>(
-      `/api/content/${id}`,
-      undefined,
-      MOCK_CONTENT.find((c) => c.id === id)
-    ),
-  createContent: (item: Partial<ContentItem>) =>
-    tryFetch<ContentItem>(
-      '/api/content',
-      { method: 'POST', body: JSON.stringify(item) },
-      { ...item, id: `c_${Date.now()}` } as ContentItem
-    ),
-  deleteContent: (id: string) =>
-    tryFetch<{ ok: true }>(
-      `/api/content/${id}`,
-      { method: 'DELETE' },
-      { ok: true }
-    ),
-
-  // Templates
-  listTemplates: () => tryFetch<PromptTemplate[]>('/api/templates', undefined, MOCK_TEMPLATES),
-  createTemplate: (tpl: Partial<PromptTemplate>) =>
-    tryFetch<PromptTemplate>(
-      '/api/templates',
-      { method: 'POST', body: JSON.stringify(tpl) },
-      { ...tpl, id: `tpl_${Date.now()}` } as PromptTemplate
-    ),
-  updateTemplate: (id: string, tpl: Partial<PromptTemplate>) =>
-    tryFetch<PromptTemplate>(
-      `/api/templates/${id}`,
-      { method: 'PUT', body: JSON.stringify(tpl) },
-      { ...tpl, id } as PromptTemplate
-    ),
-  deleteTemplate: (id: string) =>
-    tryFetch<{ ok: true }>(
-      `/api/templates/${id}`,
-      { method: 'DELETE' },
-      { ok: true }
-    ),
-
-  // Agents status
-  agentStatus: () =>
-    tryFetch<Record<string, { status: AgentStatus; lastRun?: string; currentJob?: string }>>(
-      '/api/agents/status',
-      undefined,
-      {
-        coordinator: { status: 'idle', lastRun: new Date().toISOString() },
-        'prompt-engineer': { status: 'running', currentJob: 'c003' },
-        'content-creator': { status: 'running', currentJob: 'c003' },
-        reviewer: { status: 'idle', lastRun: new Date().toISOString() },
-        publisher: { status: 'idle', lastRun: new Date(Date.now() - 5 * 60_000).toISOString() },
-      }
-    ),
-
-  // Settings
-  getSettings: () => tryFetch<AppSettings>('/api/settings', undefined, MOCK_SETTINGS),
-  saveSettings: (s: AppSettings) =>
-    tryFetch<AppSettings>('/api/settings', { method: 'POST', body: JSON.stringify(s) }, s),
-
-  // Models
-  listModels: () =>
-    tryFetch<{ id: string; label: string }[]>(
-      '/api/settings/models',
-      undefined,
-      []
-    ),
-
-  // Tasks (Mission Control persistence)
-  listTasks: () => tryFetch<TaskRow[]>('/api/tasks', undefined, []),
-  createTask: (payload: {
-    title: string
-    description?: string
-    priority?: string
-    assigned_agent_id?: string | null
-    business_id?: string | null
-    workspace_id?: string | null
-    due_date?: string | null
-  }) =>
-    tryFetch<TaskRow>(
-      '/api/tasks',
-      { method: 'POST', body: JSON.stringify(payload) },
-      { id: `t_${Date.now()}`, ...payload, status: 'queued', priority: payload.priority || 'normal', description: payload.description ?? null, assigned_agent_id: payload.assigned_agent_id ?? null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } as TaskRow
-    ),
+  // Tasks
+  listTasks: () => tryFetch<TaskRow[]>('/api/tasks', undefined, [] as TaskRow[]),
+  createTask: (payload: CreateTaskPayload) =>
+    tryFetch<TaskRow>('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   patchTask: (id: string, patch: Record<string, unknown>) =>
-    tryFetch<TaskRow>(
-      `/api/tasks/${id}`,
-      { method: 'PATCH', body: JSON.stringify(patch) },
-      { id, ...patch } as unknown as TaskRow
-    ),
+    tryFetch<TaskRow>(`/api/tasks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   deleteTask: (id: string) =>
-    tryFetch<{ ok: boolean }>(
-      `/api/tasks/${id}`,
-      { method: 'DELETE' },
-      { ok: true }
-    ),
+    tryFetch<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   postActivity: (
     taskId: string,
     payload: {
@@ -150,10 +113,52 @@ export const api = {
       agent_id?: string
     }
   ) =>
-    tryFetch(
-      `/api/tasks/${taskId}/activities`,
-      { method: 'POST', body: JSON.stringify(payload) },
-      { ok: true }
+    tryFetch<{ ok: true } | unknown>(`/api/tasks/${taskId}/activities`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // Prompt templates
+  listPrompts: () =>
+    tryFetch<PromptTemplateDTO[]>('/api/prompts', undefined, [] as PromptTemplateDTO[]),
+  createPrompt: (
+    payload: Omit<PromptTemplateDTO, 'id' | 'usageCount' | 'lastUsedAt' | 'createdAt' | 'updatedAt'>
+  ) =>
+    tryFetch<PromptTemplateDTO>('/api/prompts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updatePrompt: (id: string, patch: Partial<PromptTemplateDTO>) =>
+    tryFetch<PromptTemplateDTO>(`/api/prompts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  deletePrompt: (id: string) =>
+    tryFetch<{ ok: boolean }>(`/api/prompts/${id}`, { method: 'DELETE' }),
+
+  // Agents
+  agentStatus: () =>
+    tryFetch<Record<string, AgentStatusEntry>>(
+      '/api/agents/status',
+      undefined,
+      {} as Record<string, AgentStatusEntry>
+    ),
+
+  // Settings (no backend route yet — return whatever the server gives, or empty)
+  getSettings: () =>
+    tryFetch<AppSettings | null>('/api/settings', undefined, null),
+  saveSettings: (s: AppSettings) =>
+    tryFetch<AppSettings>('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify(s),
+    }),
+
+  // Models
+  listModels: () =>
+    tryFetch<{ id: string; label: string }[]>(
+      '/api/settings/models',
+      undefined,
+      [] as { id: string; label: string }[]
     ),
 }
 

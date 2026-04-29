@@ -1,5 +1,122 @@
 # Earthia Dashboard — Build Notes
 
+## DB-backed content pipeline + scheduler + run-now (this commit)
+
+This pass cuts every remaining mock seed out of the runtime UI and moves the
+entire content-item lifecycle into SQLite, behind a 10s scheduler tick.
+
+### Highlights
+
+- **No more seed data in the UI.** `lib/mock-data.ts` is reduced to empty
+  arrays + a default `AppSettings` constant. `useContentStore` and
+  `useTemplateStore` start empty. `lib/api.ts` no longer returns mocked
+  responses — every method hits the real `/api/*` routes. `MOCK_MODE` is now
+  a forced-empty switch (renders empty states without the network), not a
+  fake-data switch.
+- **Tasks table extended** with content-pipeline columns via idempotent
+  ALTER TABLE migrations in `lib/db/index.ts`: `content_type`, `dimensions`,
+  `platforms`, `template_id`, `prompt_body`, `review_score`, `reviewer_notes`,
+  `schedule_kind`, `schedule_at`, `schedule_meta`, `published_to`,
+  `next_run_at`, `media_url`, `thumbnail_url`, `published_at`.
+- **`prompt_templates` table** added with full CRUD: `GET/POST /api/prompts`
+  and `GET/PATCH/DELETE /api/prompts/:id`. The Prompts page now reads/writes
+  through React Query against these endpoints; the Zustand template store is
+  no longer used as a source of truth.
+- **`/api/agents/status`** is a real DB-backed endpoint now (no more
+  hardcoded mock fallback). It returns a map keyed by agent id.
+- **Dashboard feed-table sources rows directly from React Query**
+  (`useQuery({ queryKey: ['tasks'] })`) and maps `TaskRow → ContentItem` via
+  `lib/task-mapper.ts`. The Zustand `useContentStore` is no longer touched
+  by the table. SSE invalidation already wired in `components/shared/sse-provider.tsx`
+  is what drives live updates.
+- **Scheduler** (`lib/scheduler/index.ts`) is a singleton on
+  `globalThis.__ocScheduler`, started lazily the first time `getDb()` is
+  called by any API route. It ticks every 10s, atomically claims up to 5 due
+  tasks (`status='queued' AND next_run_at <= now()`), and runs a placeholder
+  pipeline: `queued → generating → reviewing → approved/rejected → published`.
+  Every transition broadcasts SSE. For recurring schedules (hourly/daily/
+  weekly), the scheduler computes the next `next_run_at` and resets the task
+  to `queued` after the terminal stage. The placeholder review_score is
+  `1 + Math.floor(Math.random() * 9)` and is clearly marked as such in the
+  code — the user's real generation/review backend will replace `runDispatch`.
+- **Add Content modal step 4** now shows five options: **Now** (default,
+  selected), Once, Hourly, Daily, Weekly. "Now" sets `schedule_kind="now"`
+  and `schedule_at = new Date().toISOString()` so the next scheduler tick
+  picks it up within ~10s. Confirm POSTs the full `CreateTaskPayload` to
+  `/api/tasks` with content_type/dimensions/platforms/template_id/prompt_body/
+  schedule_*. On success it invalidates the `tasks` query key. No Zustand
+  mutation.
+- **Topbar** now reads pending-review/queued counts from the
+  `['tasks']` query and shows agent dots for whatever agents the DB knows
+  about (no more hardcoded coordinator/prompt-engineer/etc.).
+
+### Files added
+
+```
+app/api/prompts/route.ts            # GET, POST templates
+app/api/prompts/[id]/route.ts       # GET, PATCH, DELETE one template
+app/api/agents/status/route.ts      # DB-backed agent status map
+lib/db/prompt-template-mapper.ts    # PromptTemplateRow → DTO (server-only)
+lib/scheduler/index.ts              # Singleton 10s scheduler (placeholder pipeline)
+lib/task-mapper.ts                  # TaskRow → ContentItem mapping for the UI
+```
+
+### Files changed
+
+```
+lib/db/schema.ts                    # +prompt_templates, +TASK_COLUMN_MIGRATIONS
+lib/db/index.ts                     # idempotent ALTER TABLE migration; lazy scheduler boot
+lib/db/repo.ts                      # extended createTask/updateTask for new fields,
+                                    #   listDueTasks(), prompt_templates CRUD
+lib/db/types.ts                     # extended TaskRow, TaskInsert; +PromptTemplateRow
+app/api/tasks/route.ts              # accepts new fields, computes next_run_at by schedule_kind
+lib/api.ts                          # purged mock branches, added prompts/agents/tasks methods
+lib/mock-data.ts                    # empty arrays + DEFAULT_SETTINGS-shaped AppSettings only
+lib/store.ts                        # no more mock seeding; default settings inlined
+components/dashboard/feed-table.tsx # sources rows from /api/tasks via React Query
+components/dashboard/content-preview-modal.tsx # takes ContentItem prop directly
+components/content/add-content-modal.tsx # "Now" option (default), POSTs full payload
+components/prompts/prompts-grid.tsx # React Query against /api/prompts
+components/prompts/template-editor.tsx # React Query mutations for create/update
+components/shared/topbar.tsx        # counts from /api/tasks; agent list from DB
+```
+
+### Verification
+
+- `rm -f data/mission-control.db && npm run build` → exit 0.
+- `npm run dev`, then:
+  - `GET /api/tasks` → `[]`
+  - `GET /api/prompts` → `[]`
+  - `curl /dashboard | grep -c "No content"` → 1
+  - `POST /api/tasks` with `schedule_kind: "now"` → 201, status `queued`,
+    `next_run_at` set to now.
+  - After ~13s the same task transitions out of `queued`
+    (`generating` → `reviewing` → `approved/rejected` → `published`).
+- `grep -rn "mock-data" components/ app/ lib/api.ts lib/store.ts` → only a
+  comment in `lib/store.ts` documenting the absence.
+
+### Known caveats / placeholders
+
+- The dispatch pipeline triggered by the scheduler is a **simulator**: it
+  fakes `generating`/`reviewing`/`published` with timeouts and a random
+  review_score. The hook for the real backend is `runDispatch()` in
+  `lib/scheduler/index.ts`. For tasks that have an `assigned_agent_id`,
+  `POST /api/tasks/:id/dispatch` still goes through the real OpenClaw
+  Gateway path — but the scheduler does **not** call that route yet because
+  most user-created tasks won't have an assigned agent. Wiring scheduler →
+  dispatch is a follow-up, not an MVP-blocker.
+- `published_to` URLs from the placeholder publisher are
+  `https://example.com/posts/<task>/<platform>` so the published-icons row
+  in the table renders something during smoke testing.
+- Status names: the DB now mixes "new pipeline" statuses (`generating`,
+  `reviewing`, `approved`, `rejected`, `published`) with the legacy
+  workflow statuses (`assigned`, `in_progress`, `done`, `failed`,
+  `cancelled`). `lib/task-mapper.ts:statusToContent` normalizes both into
+  the UI's `ContentStatus` enum.
+
+---
+
+
 ## OpenClaw Mission Control backend integration (this commit)
 
 The dashboard now talks to a live **OpenClaw Gateway** (WebSocket) and persists

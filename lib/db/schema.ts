@@ -1,5 +1,5 @@
 // SQL schema for Mission Control persistence (server-only).
-// Migrations are idempotent (CREATE TABLE IF NOT EXISTS).
+// Migrations are idempotent (CREATE TABLE IF NOT EXISTS + ALTER TABLE guards).
 
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -120,4 +120,39 @@ CREATE TABLE IF NOT EXISTS planning_specs (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_planning_specs_task ON planning_specs(task_id);
+
+CREATE TABLE IF NOT EXISTS prompt_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  content_types TEXT NOT NULL DEFAULT '[]',
+  tone_hints TEXT,
+  negative_prompt TEXT,
+  variables TEXT NOT NULL DEFAULT '[]',
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_templates_name ON prompt_templates(name);
 `
+
+// Idempotent ALTER TABLE migrations for content-pipeline columns on `tasks`.
+// Each entry: (column name, full ADD COLUMN clause).
+export const TASK_COLUMN_MIGRATIONS: Array<{ name: string; ddl: string }> = [
+  { name: 'content_type', ddl: "ADD COLUMN content_type TEXT" },
+  { name: 'dimensions', ddl: "ADD COLUMN dimensions TEXT" },
+  { name: 'platforms', ddl: "ADD COLUMN platforms TEXT" },
+  { name: 'template_id', ddl: "ADD COLUMN template_id TEXT" },
+  { name: 'prompt_body', ddl: "ADD COLUMN prompt_body TEXT" },
+  { name: 'review_score', ddl: "ADD COLUMN review_score INTEGER" },
+  { name: 'reviewer_notes', ddl: "ADD COLUMN reviewer_notes TEXT" },
+  { name: 'schedule_kind', ddl: "ADD COLUMN schedule_kind TEXT" },
+  { name: 'schedule_at', ddl: "ADD COLUMN schedule_at TEXT" },
+  { name: 'schedule_meta', ddl: "ADD COLUMN schedule_meta TEXT" },
+  { name: 'published_to', ddl: "ADD COLUMN published_to TEXT" },
+  { name: 'next_run_at', ddl: "ADD COLUMN next_run_at TEXT" },
+  { name: 'media_url', ddl: "ADD COLUMN media_url TEXT" },
+  { name: 'thumbnail_url', ddl: "ADD COLUMN thumbnail_url TEXT" },
+  { name: 'published_at', ddl: "ADD COLUMN published_at TEXT" },
+]

@@ -1,18 +1,34 @@
 'use client'
 import { create } from 'zustand'
 import type { ContentItem, PromptTemplate, AppSettings } from './types'
-import { MOCK_CONTENT, MOCK_TEMPLATES, MOCK_SETTINGS } from './mock-data'
-import { uid } from './utils'
+
+// Default settings live here so the store has no dependency on `lib/mock-data`.
+// Real settings will come from /api/settings once that route exists.
+const DEFAULT_SETTINGS: AppSettings = {
+  agentModels: {},
+  reviewThreshold: 6,
+  maxRetries: 3,
+  notifyOnPublish: false,
+  notifyOnFailure: true,
+}
+
+// NOTE: Content and prompt-template stores are NOT seeded with mock data.
+// They start empty and the source of truth is the SQLite-backed API. The
+// stores remain available as a UI convenience for components that want to
+// keep optimistic state, but the dashboard reads directly from React Query
+// (`/api/tasks`, `/api/prompts`).
 
 interface ContentStore {
   items: ContentItem[]
+  set: (items: ContentItem[]) => void
   add: (item: ContentItem) => void
   remove: (id: string) => void
   update: (id: string, patch: Partial<ContentItem>) => void
 }
 
 export const useContentStore = create<ContentStore>((set) => ({
-  items: MOCK_CONTENT,
+  items: [],
+  set: (items) => set({ items }),
   add: (item) => set((s) => ({ items: [item, ...s.items] })),
   remove: (id) => set((s) => ({ items: s.items.filter((i) => i.id !== id) })),
   update: (id, patch) =>
@@ -23,31 +39,12 @@ export const useContentStore = create<ContentStore>((set) => ({
 
 interface TemplateStore {
   templates: PromptTemplate[]
-  add: (tpl: Omit<PromptTemplate, 'id' | 'createdAt' | 'updatedAt' | 'usageCount'>) => PromptTemplate
-  update: (id: string, patch: Partial<PromptTemplate>) => void
-  remove: (id: string) => void
+  set: (templates: PromptTemplate[]) => void
 }
 
 export const useTemplateStore = create<TemplateStore>((set) => ({
-  templates: MOCK_TEMPLATES,
-  add: (tpl) => {
-    const newTpl: PromptTemplate = {
-      ...tpl,
-      id: uid('tpl'),
-      usageCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
-    set((s) => ({ templates: [newTpl, ...s.templates] }))
-    return newTpl
-  },
-  update: (id, patch) =>
-    set((s) => ({
-      templates: s.templates.map((t) =>
-        t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t
-      ),
-    })),
-  remove: (id) => set((s) => ({ templates: s.templates.filter((t) => t.id !== id) })),
+  templates: [],
+  set: (templates) => set({ templates }),
 }))
 
 interface SettingsStore {
@@ -57,7 +54,7 @@ interface SettingsStore {
 }
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
-  settings: MOCK_SETTINGS,
+  settings: DEFAULT_SETTINGS,
   update: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
   setAgentModel: (agentId, modelId) =>
     set((s) => ({

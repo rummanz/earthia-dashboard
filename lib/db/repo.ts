@@ -5,6 +5,8 @@ import type {
   AgentRow,
   EventRow,
   OpenclawSessionRow,
+  PromptTemplateRow,
+  ScheduleKind,
   TaskActivityRow,
   TaskDeliverableRow,
   TaskInsert,
@@ -56,6 +58,12 @@ export function getTask(id: string): TaskRow | null {
   )
 }
 
+function jsonOrNull(v: unknown): string | null {
+  if (v === undefined || v === null) return null
+  if (typeof v === 'string') return v
+  return JSON.stringify(v)
+}
+
 export function createTask(input: TaskInsert): TaskRow {
   const db = getDb()
   const id = randomUUID()
@@ -74,10 +82,36 @@ export function createTask(input: TaskInsert): TaskRow {
     workflow_template_id: input.workflow_template_id ?? null,
     created_at: now,
     updated_at: now,
+    content_type: input.content_type ?? null,
+    dimensions: jsonOrNull(input.dimensions),
+    platforms: jsonOrNull(input.platforms),
+    template_id: input.template_id ?? null,
+    prompt_body: input.prompt_body ?? null,
+    review_score: input.review_score ?? null,
+    reviewer_notes: input.reviewer_notes ?? null,
+    schedule_kind: input.schedule_kind ?? null,
+    schedule_at: input.schedule_at ?? null,
+    schedule_meta: jsonOrNull(input.schedule_meta),
+    published_to: jsonOrNull(input.published_to),
+    next_run_at: input.next_run_at ?? null,
+    media_url: input.media_url ?? null,
+    thumbnail_url: input.thumbnail_url ?? null,
+    published_at: input.published_at ?? null,
   }
   db.prepare(
-    `INSERT INTO tasks (id, title, description, status, priority, assigned_agent_id, created_by_agent_id, workspace_id, business_id, due_date, workflow_template_id, created_at, updated_at)
-     VALUES (@id, @title, @description, @status, @priority, @assigned_agent_id, @created_by_agent_id, @workspace_id, @business_id, @due_date, @workflow_template_id, @created_at, @updated_at)`
+    `INSERT INTO tasks (
+       id, title, description, status, priority, assigned_agent_id, created_by_agent_id,
+       workspace_id, business_id, due_date, workflow_template_id, created_at, updated_at,
+       content_type, dimensions, platforms, template_id, prompt_body, review_score, reviewer_notes,
+       schedule_kind, schedule_at, schedule_meta, published_to, next_run_at,
+       media_url, thumbnail_url, published_at
+     ) VALUES (
+       @id, @title, @description, @status, @priority, @assigned_agent_id, @created_by_agent_id,
+       @workspace_id, @business_id, @due_date, @workflow_template_id, @created_at, @updated_at,
+       @content_type, @dimensions, @platforms, @template_id, @prompt_body, @review_score, @reviewer_notes,
+       @schedule_kind, @schedule_at, @schedule_meta, @published_to, @next_run_at,
+       @media_url, @thumbnail_url, @published_at
+     )`
   ).run(row)
   return row
 }
@@ -92,23 +126,55 @@ export interface TaskPatch {
   due_date?: string | null
   business_id?: string | null
   workspace_id?: string | null
+  content_type?: string | null
+  dimensions?: string | { width: number; height: number; ratio?: string } | null
+  platforms?: string | string[] | null
+  template_id?: string | null
+  prompt_body?: string | null
+  review_score?: number | null
+  reviewer_notes?: string | null
+  schedule_kind?: ScheduleKind | null
+  schedule_at?: string | null
+  schedule_meta?: string | Record<string, unknown> | null
+  published_to?: string | Record<string, string | null> | null
+  next_run_at?: string | null
+  media_url?: string | null
+  thumbnail_url?: string | null
+  published_at?: string | null
 }
+
+const JSON_PATCH_FIELDS: ReadonlySet<keyof TaskPatch> = new Set<keyof TaskPatch>([
+  'dimensions',
+  'platforms',
+  'schedule_meta',
+  'published_to',
+])
 
 export function updateTask(id: string, patch: TaskPatch): TaskRow | null {
   const db = getDb()
   const existing = getTask(id)
   if (!existing) return null
-  const next: TaskRow = {
-    ...existing,
-    ...Object.fromEntries(
-      Object.entries(patch).filter(([, v]) => v !== undefined)
-    ),
-    updated_at: nowIso(),
-  } as TaskRow
+  const merged: Record<string, unknown> = { ...existing }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue
+    if (JSON_PATCH_FIELDS.has(k as keyof TaskPatch)) {
+      merged[k] = jsonOrNull(v)
+    } else {
+      merged[k] = v
+    }
+  }
+  merged.updated_at = nowIso()
+  const next = merged as unknown as TaskRow
   db.prepare(
-    `UPDATE tasks SET title=@title, description=@description, status=@status, priority=@priority,
+    `UPDATE tasks SET
+       title=@title, description=@description, status=@status, priority=@priority,
        assigned_agent_id=@assigned_agent_id, workspace_id=@workspace_id, business_id=@business_id,
-       due_date=@due_date, workflow_template_id=@workflow_template_id, updated_at=@updated_at
+       due_date=@due_date, workflow_template_id=@workflow_template_id, updated_at=@updated_at,
+       content_type=@content_type, dimensions=@dimensions, platforms=@platforms,
+       template_id=@template_id, prompt_body=@prompt_body, review_score=@review_score,
+       reviewer_notes=@reviewer_notes, schedule_kind=@schedule_kind, schedule_at=@schedule_at,
+       schedule_meta=@schedule_meta, published_to=@published_to, next_run_at=@next_run_at,
+       media_url=@media_url, thumbnail_url=@thumbnail_url, published_at=@published_at
      WHERE id=@id`
   ).run(next)
   return next
@@ -125,6 +191,18 @@ export function deleteTask(id: string): boolean {
     return r.changes > 0
   })
   return tx(id)
+}
+
+export function listDueTasks(limit = 5): TaskRow[] {
+  const db = getDb()
+  return db
+    .prepare(
+      `SELECT * FROM tasks
+       WHERE status = 'queued' AND next_run_at IS NOT NULL AND datetime(next_run_at) <= datetime('now')
+       ORDER BY datetime(next_run_at) ASC
+       LIMIT ?`
+    )
+    .all(limit) as TaskRow[]
 }
 
 // ---------------- agents ----------------
@@ -444,4 +522,115 @@ export function listSubagents(task_id: string): OpenclawSessionRow[] {
       "SELECT * FROM openclaw_sessions WHERE task_id = ? AND session_type = 'subagent' ORDER BY datetime(started_at) ASC"
     )
     .all(task_id) as OpenclawSessionRow[]
+}
+
+// ---------------- prompt_templates ----------------
+
+export interface PromptTemplateInsert {
+  name: string
+  body: string
+  content_types?: string[]
+  tone_hints?: string | null
+  negative_prompt?: string | null
+  variables?: Array<{ name: string; description?: string }>
+}
+
+export interface PromptTemplatePatch {
+  name?: string
+  body?: string
+  content_types?: string[]
+  tone_hints?: string | null
+  negative_prompt?: string | null
+  variables?: Array<{ name: string; description?: string }>
+  usage_count?: number
+  last_used_at?: string | null
+}
+
+export function listPromptTemplates(): PromptTemplateRow[] {
+  return getDb()
+    .prepare('SELECT * FROM prompt_templates ORDER BY datetime(updated_at) DESC')
+    .all() as PromptTemplateRow[]
+}
+
+export function getPromptTemplate(id: string): PromptTemplateRow | null {
+  return (
+    (getDb()
+      .prepare('SELECT * FROM prompt_templates WHERE id = ?')
+      .get(id) as PromptTemplateRow | undefined) ?? null
+  )
+}
+
+export function createPromptTemplate(
+  input: PromptTemplateInsert
+): PromptTemplateRow {
+  const db = getDb()
+  const now = nowIso()
+  const row: PromptTemplateRow = {
+    id: randomUUID(),
+    name: input.name,
+    body: input.body,
+    content_types: JSON.stringify(input.content_types ?? []),
+    tone_hints: input.tone_hints ?? null,
+    negative_prompt: input.negative_prompt ?? null,
+    variables: JSON.stringify(input.variables ?? []),
+    usage_count: 0,
+    last_used_at: null,
+    created_at: now,
+    updated_at: now,
+  }
+  db.prepare(
+    `INSERT INTO prompt_templates
+       (id, name, body, content_types, tone_hints, negative_prompt, variables, usage_count, last_used_at, created_at, updated_at)
+     VALUES
+       (@id, @name, @body, @content_types, @tone_hints, @negative_prompt, @variables, @usage_count, @last_used_at, @created_at, @updated_at)`
+  ).run(row)
+  return row
+}
+
+export function updatePromptTemplate(
+  id: string,
+  patch: PromptTemplatePatch
+): PromptTemplateRow | null {
+  const db = getDb()
+  const existing = getPromptTemplate(id)
+  if (!existing) return null
+  const next: PromptTemplateRow = {
+    ...existing,
+    name: patch.name ?? existing.name,
+    body: patch.body ?? existing.body,
+    content_types:
+      patch.content_types !== undefined
+        ? JSON.stringify(patch.content_types)
+        : existing.content_types,
+    tone_hints:
+      patch.tone_hints !== undefined ? patch.tone_hints : existing.tone_hints,
+    negative_prompt:
+      patch.negative_prompt !== undefined
+        ? patch.negative_prompt
+        : existing.negative_prompt,
+    variables:
+      patch.variables !== undefined
+        ? JSON.stringify(patch.variables)
+        : existing.variables,
+    usage_count:
+      patch.usage_count !== undefined ? patch.usage_count : existing.usage_count,
+    last_used_at:
+      patch.last_used_at !== undefined
+        ? patch.last_used_at
+        : existing.last_used_at,
+    updated_at: nowIso(),
+  }
+  db.prepare(
+    `UPDATE prompt_templates SET
+       name=@name, body=@body, content_types=@content_types, tone_hints=@tone_hints,
+       negative_prompt=@negative_prompt, variables=@variables, usage_count=@usage_count,
+       last_used_at=@last_used_at, updated_at=@updated_at
+     WHERE id=@id`
+  ).run(next)
+  return next
+}
+
+export function deletePromptTemplate(id: string): boolean {
+  const r = getDb().prepare('DELETE FROM prompt_templates WHERE id = ?').run(id)
+  return r.changes > 0
 }
