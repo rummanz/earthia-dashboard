@@ -6,12 +6,12 @@ import type {
 } from './types'
 import { MOCK_CONTENT, MOCK_SETTINGS, MOCK_TEMPLATES } from './mock-data'
 
-const API_URL = process.env.NEXT_PUBLIC_OPENCLAW_API_URL || ''
-const MOCK_MODE =
-  process.env.NEXT_PUBLIC_MOCK_MODE !== 'false' && (process.env.NEXT_PUBLIC_MOCK_MODE === 'true' || !API_URL)
+// Default to same-origin Next.js API (proxies to OpenClaw Gateway). Override via env.
+const API_URL = process.env.NEXT_PUBLIC_OPENCLAW_API_URL ?? ''
+const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_MODE === 'true'
 
 async function tryFetch<T>(path: string, init?: RequestInit, fallback?: T): Promise<T> {
-  if (MOCK_MODE || !API_URL) {
+  if (MOCK_MODE) {
     if (fallback === undefined) throw new Error(`No mock fallback for ${path}`)
     return fallback
   }
@@ -22,6 +22,7 @@ async function tryFetch<T>(path: string, init?: RequestInit, fallback?: T): Prom
         'Content-Type': 'application/json',
         ...(init?.headers ?? {}),
       },
+      cache: 'no-store',
     })
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
     return (await res.json()) as T
@@ -29,6 +30,17 @@ async function tryFetch<T>(path: string, init?: RequestInit, fallback?: T): Prom
     if (fallback !== undefined) return fallback
     throw err
   }
+}
+
+export interface TaskRow {
+  id: string
+  title: string
+  description: string | null
+  status: string
+  priority: string
+  assigned_agent_id: string | null
+  created_at: string
+  updated_at: string
 }
 
 export const api = {
@@ -98,8 +110,50 @@ export const api = {
     tryFetch<{ id: string; label: string }[]>(
       '/api/settings/models',
       undefined,
-      // Returning empty falls back to DEFAULT_MODELS in UI; we provide an empty array fallback.
       []
+    ),
+
+  // Tasks (Mission Control persistence)
+  listTasks: () => tryFetch<TaskRow[]>('/api/tasks', undefined, []),
+  createTask: (payload: {
+    title: string
+    description?: string
+    priority?: string
+    assigned_agent_id?: string | null
+    business_id?: string | null
+    workspace_id?: string | null
+    due_date?: string | null
+  }) =>
+    tryFetch<TaskRow>(
+      '/api/tasks',
+      { method: 'POST', body: JSON.stringify(payload) },
+      { id: `t_${Date.now()}`, ...payload, status: 'queued', priority: payload.priority || 'normal', description: payload.description ?? null, assigned_agent_id: payload.assigned_agent_id ?? null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } as TaskRow
+    ),
+  patchTask: (id: string, patch: Record<string, unknown>) =>
+    tryFetch<TaskRow>(
+      `/api/tasks/${id}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+      { id, ...patch } as unknown as TaskRow
+    ),
+  deleteTask: (id: string) =>
+    tryFetch<{ ok: boolean }>(
+      `/api/tasks/${id}`,
+      { method: 'DELETE' },
+      { ok: true }
+    ),
+  postActivity: (
+    taskId: string,
+    payload: {
+      activity_type: string
+      message: string
+      metadata?: string
+      agent_id?: string
+    }
+  ) =>
+    tryFetch(
+      `/api/tasks/${taskId}/activities`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      { ok: true }
     ),
 }
 

@@ -12,6 +12,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { api } from '@/lib/api'
+import { useQueryClient } from '@tanstack/react-query'
 
 const STEPS = ['Type & Dimensions', 'Platforms', 'Template', 'Schedule']
 
@@ -20,6 +22,7 @@ export function AddContentModal() {
   const setOpen = useUIStore((s) => s.setAddContentOpen)
   const addItem = useContentStore((s) => s.add)
   const templates = useTemplateStore((s) => s.templates)
+  const qc = useQueryClient()
 
   const [step, setStep] = useState(0)
   const [contentType, setContentType] = useState<ContentType | null>(null)
@@ -80,7 +83,7 @@ export function AddContentModal() {
     setStep((s) => Math.max(s - 1, 0))
   }
 
-  function confirm() {
+  async function confirm() {
     if (!contentType || !templateId || !selectedTemplate) {
       toast.error('Form incomplete')
       return
@@ -110,8 +113,45 @@ export function AddContentModal() {
       createdAt: new Date().toISOString(),
       scheduledAt: startAt,
     }
+    // Optimistic UI update for the existing local store.
     addItem(newItem)
-    toast.success('Content queued')
+    // Persist to Mission Control backend as a Task. Best-effort.
+    try {
+      const description = JSON.stringify(
+        {
+          template_id: templateId,
+          template_name: selectedTemplate.name,
+          content_type: contentType,
+          dimensions: finalDim,
+          platforms,
+          variables: variableValues,
+          schedule: newItem.schedule,
+        },
+        null,
+        2
+      )
+      const task = await api.createTask({
+        title: selectedTemplate.name,
+        description,
+        priority: 'normal',
+      })
+      await api
+        .postActivity(task.id, {
+          activity_type: 'updated',
+          message: 'Queued from Add Content modal',
+          metadata: JSON.stringify({
+            content_type: contentType,
+            platforms,
+          }),
+        })
+        .catch(() => {})
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      toast.success('Content queued')
+    } catch (err) {
+      toast.warning(
+        `Saved locally; backend persist failed: ${err instanceof Error ? err.message : 'unknown'}`
+      )
+    }
     close()
   }
 
