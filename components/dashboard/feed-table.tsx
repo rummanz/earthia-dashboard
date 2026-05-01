@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn, formatDate, isFuture } from '@/lib/utils'
-import { Plus, Play, Image as ImageIcon, Layers, Trash2 } from 'lucide-react'
+import { Plus, Play, Image as ImageIcon, Layers, Trash2, RotateCcw } from 'lucide-react'
 import { ContentPreviewModal } from './content-preview-modal'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -53,6 +53,13 @@ export function FeedTable() {
     mutationFn: (id: string) => api.deleteTask(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
+    },
+  })
+  const retryMut = useMutation({
+    mutationFn: (id: string) => api.retryTask(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      qc.invalidateQueries({ queryKey: ['task-logs'] })
     },
   })
 
@@ -195,6 +202,8 @@ export function FeedTable() {
                   threshold={threshold}
                   onClick={() => setPreviewItem(item)}
                   onDelete={() => setDeleteId(item.id)}
+                  onRetry={() => retryMut.mutate(item.id)}
+                  isRetrying={retryMut.isPending}
                 />
               ))}
             </tbody>
@@ -247,12 +256,16 @@ function FeedRow({
   threshold,
   onClick,
   onDelete,
+  onRetry,
+  isRetrying,
 }: {
   item: ContentItem
   index: number
   threshold: number
   onClick: () => void
   onDelete: () => void
+  onRetry: () => void
+  isRetrying: boolean
 }) {
   const dateStr = item.scheduledAt || item.publishedAt || item.createdAt
   const isUpcoming = isFuture(dateStr)
@@ -295,17 +308,33 @@ function FeedRow({
         <SocialIconRow platforms={item.platforms} publishedPosts={item.publishedPosts} />
       </td>
       <td className="px-4 py-3 text-right">
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity p-1.5 rounded text-[var(--muted)] hover:text-[var(--danger)] hover:bg-[var(--background)]"
-          title="Delete task"
-          aria-label="Delete task"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+        <div className="inline-flex items-center gap-1">
+          {item.status === 'failed' && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onRetry()
+              }}
+              disabled={isRetrying}
+              className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity p-1.5 rounded text-[var(--muted)] hover:text-[var(--accent)] hover:bg-[var(--background)] disabled:opacity-50"
+              title="Retry failed stage"
+              aria-label="Retry failed task"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity p-1.5 rounded text-[var(--muted)] hover:text-[var(--danger)] hover:bg-[var(--background)]"
+            title="Delete task"
+            aria-label="Delete task"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </td>
     </tr>
   )

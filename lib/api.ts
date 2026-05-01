@@ -47,6 +47,7 @@ export interface TaskRow {
   media_url: string | null
   thumbnail_url: string | null
   published_at: string | null
+  failed_stage: string | null
 }
 
 export interface PromptTemplateDTO {
@@ -122,6 +123,16 @@ export const api = {
     tryFetch<TaskRow>(`/api/tasks/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    }),
+  retryTask: (id: string, stage?: 'generate' | 'review' | 'publish') =>
+    tryFetch<{
+      success: boolean
+      task_id: string
+      resumed_stage: 'generate' | 'review' | 'publish'
+      message: string
+    }>(`/api/tasks/${id}/retry`, {
+      method: 'POST',
+      body: JSON.stringify(stage ? { stage } : {}),
     }),
   deleteTask: (id: string) =>
     tryFetch<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),

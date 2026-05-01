@@ -30,6 +30,7 @@ export interface TaskRow {
   media_url: string | null
   thumbnail_url: string | null
   published_at: string | null
+  failed_stage: string | null
 }
 
 export interface AgentRow {
@@ -158,4 +159,5 @@ export interface TaskInsert {
   media_url?: string | null
   thumbnail_url?: string | null
   published_at?: string | null
+  failed_stage?: string | null
 }

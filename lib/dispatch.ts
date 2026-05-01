@@ -16,6 +16,7 @@ import type { AgentRow, TaskRow } from '@/lib/db/types'
 import { ensureGateway } from '@/lib/openclaw/client'
 import { broadcast } from '@/lib/sse/broadcast'
 import { ensureGatewayAgentsImported } from '@/lib/agents-import'
+import type { RetryStage } from '@/lib/retry-stage'
 
 const COORDINATOR_GATEWAY_ID = 'coordinator'
 const DEFAULT_REVIEW_THRESHOLD = 7
@@ -74,6 +75,7 @@ function findCoordinatorAgent(): AgentRow | null {
 function buildSpec(args: {
   task: TaskRow
   reviewThreshold: number
+  resumeFromStage?: RetryStage
 }): string {
   const t = args.task
   const dims = parseDimensions(t)
@@ -85,6 +87,15 @@ function buildSpec(args: {
     platforms.length > 0 ? `[${platforms.join(', ')}]` : '[]'
   const templateStr = t.template_id ? t.template_id : 'custom'
   const promptBody = (t.prompt_body ?? '').trim() || '(empty)'
+  const isRetry = Boolean(args.resumeFromStage)
+  const retryDirectives = isRetry
+    ? [
+        `retry_mode: true`,
+        `resume_from_stage: ${args.resumeFromStage}`,
+        `IMPORTANT: Execute ONLY the specified failed stage. Do not restart from the beginning.`,
+        `Reuse already-generated outputs from prior successful stages.`,
+      ]
+    : []
 
   return [
     `[Mission Control] Task ${t.id}`,
@@ -96,8 +107,11 @@ function buildSpec(args: {
     `prompt_body:`,
     `  ${promptBody.split('\n').join('\n  ')}`,
     `review_threshold: ${args.reviewThreshold}`,
+    ...retryDirectives,
     ``,
-    `Run the full pipeline as documented in your system prompt. When complete, POST to:`,
+    isRetry
+      ? `Run only the requested retry stage as documented in your system prompt. When complete, POST to:`
+      : `Run the full pipeline as documented in your system prompt. When complete, POST to:`,
     `  http://localhost:3000/api/webhooks/agent-completion`,
     `with body:`,
     `  {`,
@@ -106,10 +120,11 @@ function buildSpec(args: {
     `    "review_score": <int 1-9>,`,
     `    "review_notes": "<text>",`,
     `    "published_to": { "<platform>": "<post_url|null>" },`,
+    `    "failed_stage": "<generate|review|publish>",`,
     `    "media_paths": ["<absolute path or url>"]`,
     `  }`,
     ``,
-    `On failure, POST the same endpoint with status="failed" and a "reason" string.`,
+    `On failure, POST the same endpoint with status="failed", a "reason" string, and "failed_stage".`,
   ].join('\n')
 }
 
@@ -121,7 +136,10 @@ export interface DispatchResult {
   error?: string
 }
 
-export async function dispatchTask(taskId: string): Promise<DispatchResult> {
+export async function dispatchTask(
+  taskId: string,
+  opts?: { resumeFromStage?: RetryStage }
+): Promise<DispatchResult> {
   if (inflight().has(taskId)) {
     return { ok: false, task_id: taskId, error: 'already in flight' }
   }
@@ -196,13 +214,27 @@ export async function dispatchTask(taskId: string): Promise<DispatchResult> {
   const sessionKey = `${coordinator.session_key_prefix || 'agent:main:'}${session.openclaw_session_id}`
 
   const reviewThreshold = DEFAULT_REVIEW_THRESHOLD
-  const spec = buildSpec({ task, reviewThreshold })
+  const spec = buildSpec({
+    task,
+    reviewThreshold,
+    resumeFromStage: opts?.resumeFromStage,
+  })
+
+  const nextStatus =
+    opts?.resumeFromStage === 'generate'
+      ? 'generating'
+      : opts?.resumeFromStage === 'review'
+        ? 'reviewing'
+        : opts?.resumeFromStage === 'publish'
+          ? 'approved'
+          : 'in_progress'
 
   // Mark task in_progress and assign the coordinator.
   const updated = updateTask(taskId, {
-    status: 'in_progress',
+    status: nextStatus,
     assigned_agent_id: coordinator.id,
     next_run_at: null,
+    failed_stage: null,
   })
 
   let sendErr: Error | null = null
@@ -254,8 +286,10 @@ export async function dispatchTask(taskId: string): Promise<DispatchResult> {
     task_id: taskId,
     agent_id: coordinator.id,
     activity_type: 'dispatched',
-    message: 'Dispatched to Coordinator',
-    metadata: JSON.stringify({ sessionKey }),
+    message: opts?.resumeFromStage
+      ? `Retrying failed stage: ${opts.resumeFromStage}`
+      : 'Dispatched to Coordinator',
+    metadata: JSON.stringify({ sessionKey, resumeFromStage: opts?.resumeFromStage ?? null }),
   })
   createEvent({
     type: 'task_dispatched',

@@ -100,6 +100,7 @@ export function createTask(input: TaskInsert): TaskRow {
     media_url: input.media_url ?? null,
     thumbnail_url: input.thumbnail_url ?? null,
     published_at: input.published_at ?? null,
+    failed_stage: input.failed_stage ?? null,
   }
   db.prepare(
     `INSERT INTO tasks (
@@ -107,13 +108,13 @@ export function createTask(input: TaskInsert): TaskRow {
        workspace_id, business_id, due_date, workflow_template_id, created_at, updated_at,
        content_type, dimensions, platforms, template_id, prompt_body, review_score, reviewer_notes,
        schedule_kind, schedule_at, schedule_meta, published_to, next_run_at,
-       media_url, thumbnail_url, published_at
+       media_url, thumbnail_url, published_at, failed_stage
      ) VALUES (
        @id, @title, @description, @status, @priority, @assigned_agent_id, @created_by_agent_id,
        @workspace_id, @business_id, @due_date, @workflow_template_id, @created_at, @updated_at,
        @content_type, @dimensions, @platforms, @template_id, @prompt_body, @review_score, @reviewer_notes,
        @schedule_kind, @schedule_at, @schedule_meta, @published_to, @next_run_at,
-       @media_url, @thumbnail_url, @published_at
+       @media_url, @thumbnail_url, @published_at, @failed_stage
      )`
   ).run(row)
   return row
@@ -144,6 +145,7 @@ export interface TaskPatch {
   media_url?: string | null
   thumbnail_url?: string | null
   published_at?: string | null
+  failed_stage?: string | null
 }
 
 const JSON_PATCH_FIELDS: ReadonlySet<keyof TaskPatch> = new Set<keyof TaskPatch>([
@@ -177,7 +179,8 @@ export function updateTask(id: string, patch: TaskPatch): TaskRow | null {
        template_id=@template_id, prompt_body=@prompt_body, review_score=@review_score,
        reviewer_notes=@reviewer_notes, schedule_kind=@schedule_kind, schedule_at=@schedule_at,
        schedule_meta=@schedule_meta, published_to=@published_to, next_run_at=@next_run_at,
-       media_url=@media_url, thumbnail_url=@thumbnail_url, published_at=@published_at
+       media_url=@media_url, thumbnail_url=@thumbnail_url, published_at=@published_at,
+       failed_stage=@failed_stage
      WHERE id=@id`
   ).run(next)
   return next

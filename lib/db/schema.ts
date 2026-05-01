@@ -167,4 +167,5 @@ export const TASK_COLUMN_MIGRATIONS: Array<{ name: string; ddl: string }> = [
   { name: 'media_url', ddl: "ADD COLUMN media_url TEXT" },
   { name: 'thumbnail_url', ddl: "ADD COLUMN thumbnail_url TEXT" },
   { name: 'published_at', ddl: "ADD COLUMN published_at TEXT" },
+  { name: 'failed_stage', ddl: "ADD COLUMN failed_stage TEXT" },
 ]

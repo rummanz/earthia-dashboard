@@ -95,6 +95,12 @@ export function taskToContentItem(t: TaskRow): ContentItem {
 
   const meta = safeJson<Record<string, unknown>>(t.schedule_meta) ?? {}
   const startAt = t.schedule_at || t.next_run_at || t.created_at
+  const failedStage =
+    t.failed_stage === 'generate' ||
+    t.failed_stage === 'review' ||
+    t.failed_stage === 'publish'
+      ? t.failed_stage
+      : undefined
 
   const publishedToRaw =
     safeJson<Record<string, string | null>>(t.published_to) ?? {}
@@ -142,6 +148,7 @@ export function taskToContentItem(t: TaskRow): ContentItem {
         ? (meta.daysOfWeek as number[])
         : undefined,
     },
+    failedStage,
     publishedPosts: publishedPosts.length ? publishedPosts : undefined,
     createdAt: t.created_at,
     scheduledAt: t.next_run_at ?? t.schedule_at ?? undefined,

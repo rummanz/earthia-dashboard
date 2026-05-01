@@ -52,6 +52,7 @@ export interface ContentItem {
   mediaUrls?: string[]
   thumbnailUrl?: string
   schedule: ScheduleConfig
+  failedStage?: 'generate' | 'review' | 'publish'
   publishedPosts?: PublishedPost[]
   createdAt: string
   scheduledAt?: string

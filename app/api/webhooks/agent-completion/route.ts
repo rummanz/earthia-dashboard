@@ -17,6 +17,7 @@ import {
 import type { ScheduleKind, TaskRow, TaskStatus } from '@/lib/db/types'
 import { broadcast } from '@/lib/sse/broadcast'
 import { clearDispatchTimer } from '@/lib/dispatch'
+import { inferFailedStage, isRetryStage } from '@/lib/retry-stage'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -30,6 +31,7 @@ interface WebhookBody {
   message?: string
   status?: string
   reason?: string
+  failed_stage?: string
   review_score?: number
   review_notes?: string
   published_to?: Record<string, string | null | undefined>
@@ -209,6 +211,7 @@ export async function POST(req: NextRequest) {
   // Determine final status.
   let finalStatus: string
   let finalReviewerNotes: string | null = reviewNotes
+  let failedStage: 'generate' | 'review' | 'publish' | null = null
   const publishedTo: Record<string, string | null> = {}
   if (publishedToRaw && typeof publishedToRaw === 'object') {
     for (const [k, v] of Object.entries(publishedToRaw)) {
@@ -222,6 +225,13 @@ export async function POST(req: NextRequest) {
   if (failed) {
     finalStatus = 'failed'
     finalReviewerNotes = body.reason ?? reviewNotes ?? 'Coordinator reported failure'
+    failedStage = isRetryStage(body.failed_stage)
+      ? body.failed_stage
+      : inferFailedStage({
+          task,
+          reason: body.reason ?? null,
+          summary: summary ?? null,
+        })
   } else if (reviewScore !== null && reviewScore < threshold) {
     finalStatus = 'rejected'
   } else if (Object.keys(publishedTo).length === 0) {
@@ -241,6 +251,7 @@ export async function POST(req: NextRequest) {
     reviewer_notes: finalReviewerNotes,
     media_url: mediaUrlValue,
     thumbnail_url: thumbnailUrlValue,
+    failed_stage: finalStatus === 'failed' ? failedStage : null,
     published_to:
       Object.keys(publishedTo).length > 0 ? publishedTo : null,
     published_at: finalStatus === 'published' ? nowIso() : null,
