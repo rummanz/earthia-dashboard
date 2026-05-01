@@ -9,7 +9,7 @@ capabilities:
   - Composition and framing analysis
   - Prompt-adherence scoring
   - Written reviewer notes
-model: claude-opus-4-5
+model: claude-opus-4-7
 ---
 
 # Reviewer

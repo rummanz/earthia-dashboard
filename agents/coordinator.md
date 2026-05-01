@@ -9,7 +9,7 @@ capabilities:
   - Retry logic
   - Job priority management
   - Pipeline observability
-model: claude-sonnet-4-20250514
+model: claude-opus-4-7
 ---
 
 # Coordinator

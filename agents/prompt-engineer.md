@@ -9,7 +9,7 @@ capabilities:
   - Negative prompt synthesis
   - Tone/voice consistency
   - Hashtag and caption seeding
-model: claude-sonnet-4-20250514
+model: claude-opus-4-7
 ---
 
 # Prompt Engineer
