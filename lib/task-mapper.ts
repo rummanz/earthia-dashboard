@@ -7,6 +7,7 @@ import type {
   ScheduleType,
   SocialPlatform,
 } from './types'
+import { normalizeMediaReference, parseMediaReferences } from './media'
 
 const VALID_PLATFORMS: ReadonlySet<SocialPlatform> = new Set<SocialPlatform>([
   'instagram',
@@ -108,6 +109,14 @@ export function taskToContentItem(t: TaskRow): ContentItem {
     }
   }
 
+  const mediaUrls = parseMediaReferences(t.media_url)
+    .map((p) => normalizeMediaReference(t.id, p))
+    .filter((p): p is string => Boolean(p))
+  const uniqueMediaUrls = Array.from(new Set(mediaUrls))
+  const mediaUrl =
+    uniqueMediaUrls[0] ?? normalizeMediaReference(t.id, t.media_url) ?? undefined
+  const thumbnailUrl = normalizeMediaReference(t.id, t.thumbnail_url) ?? undefined
+
   return {
     id: t.id,
     templateId: t.template_id ?? '',
@@ -119,8 +128,9 @@ export function taskToContentItem(t: TaskRow): ContentItem {
     status: statusToContent(t.status),
     reviewScore: t.review_score ?? undefined,
     reviewNotes: t.reviewer_notes ?? undefined,
-    mediaUrl: t.media_url ?? undefined,
-    thumbnailUrl: t.thumbnail_url ?? undefined,
+    mediaUrl,
+    mediaUrls: uniqueMediaUrls.length ? uniqueMediaUrls : undefined,
+    thumbnailUrl,
     schedule: {
       type: scheduleKindToType(t.schedule_kind),
       startAt,

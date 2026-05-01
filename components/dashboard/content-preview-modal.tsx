@@ -19,12 +19,14 @@ import type { ContentItem } from '@/lib/types'
 import { formatDate } from '@/lib/utils'
 import {
   Image as ImageIcon,
-  Play,
+  ChevronLeft,
+  ChevronRight,
   MoreVertical,
   Copy,
   Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { isVideoMediaUrl, normalizeMediaReference } from '@/lib/media'
 
 interface Props {
   item: ContentItem | null
@@ -87,27 +89,46 @@ function OverviewPanel({
   item: ContentItem
   threshold: number
 }) {
+  const { data: deliverables } = useQuery({
+    queryKey: ['task-deliverables', item.id],
+    queryFn: () => api.getTaskDeliverables(item.id),
+    enabled: Boolean(item.id),
+  })
+
+  const previewMedia = useMemo(() => {
+    const resolved: string[] = []
+    const pushRef = (raw: string | null | undefined) => {
+      const normalized = normalizeMediaReference(item.id, raw)
+      if (!normalized) return
+      if (!resolved.includes(normalized)) {
+        resolved.push(normalized)
+      }
+    }
+
+    for (const mediaRef of item.mediaUrls ?? []) {
+      pushRef(mediaRef)
+    }
+    pushRef(item.mediaUrl)
+
+    for (const d of deliverables ?? []) {
+      if (d.deliverable_type === 'media' || d.path) {
+        pushRef(d.path)
+      }
+    }
+
+    if (resolved.length === 0) {
+      pushRef(item.thumbnailUrl)
+    }
+
+    return resolved
+  }, [deliverables, item.id, item.mediaUrl, item.mediaUrls, item.thumbnailUrl])
+
   return (
     <div className="grid md:grid-cols-2 gap-6">
-      <div className="rounded-md border border-[var(--border)] bg-[var(--background)] aspect-square flex items-center justify-center overflow-hidden">
-        {item.mediaUrl ? (
-          <div className="relative w-full h-full">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={item.mediaUrl} alt="" className="w-full h-full object-cover" />
-            {(item.contentType === 'video' || item.contentType === 'reel') && (
-              <Play
-                className="absolute inset-0 m-auto h-12 w-12 text-white drop-shadow"
-                fill="currentColor"
-              />
-            )}
-          </div>
-        ) : (
-          <div className="text-center text-[var(--muted)]">
-            <ImageIcon className="h-12 w-12 mx-auto mb-2" />
-            <p className="text-xs">No media yet</p>
-          </div>
-        )}
-      </div>
+      <MediaPreview
+        contentType={item.contentType}
+        mediaUrls={previewMedia}
+      />
 
       <div className="space-y-4">
         <Section label="Status">
@@ -169,6 +190,85 @@ function OverviewPanel({
               publishedPosts={item.publishedPosts}
             />
           </Section>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MediaPreview({
+  contentType,
+  mediaUrls,
+}: {
+  contentType: ContentItem['contentType']
+  mediaUrls: string[]
+}) {
+  const [activeIndex, setActiveIndex] = useState(0)
+
+  useEffect(() => {
+    setActiveIndex(0)
+  }, [mediaUrls.join('|')])
+
+  if (mediaUrls.length === 0) {
+    return (
+      <div className="rounded-md border border-[var(--border)] bg-[var(--background)] aspect-square flex items-center justify-center overflow-hidden">
+        <div className="text-center text-[var(--muted)]">
+          <ImageIcon className="h-12 w-12 mx-auto mb-2" />
+          <p className="text-xs">No media yet</p>
+        </div>
+      </div>
+    )
+  }
+
+  const maxIndex = mediaUrls.length - 1
+  const index = Math.min(Math.max(activeIndex, 0), maxIndex)
+  const current = mediaUrls[index]
+  const showVideo =
+    isVideoMediaUrl(current) || contentType === 'video' || contentType === 'reel'
+  const canSlide = mediaUrls.length > 1
+
+  return (
+    <div className="rounded-md border border-[var(--border)] bg-[var(--background)] aspect-square overflow-hidden">
+      <div className="relative w-full h-full">
+        {showVideo ? (
+          <video
+            src={current}
+            controls
+            preload="metadata"
+            className="w-full h-full object-contain bg-black"
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={current} alt="Generated media preview" className="w-full h-full object-contain" />
+        )}
+
+        {canSlide && (
+          <>
+            <button
+              type="button"
+              aria-label="Previous media"
+              className="absolute left-2 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full border border-white/30 bg-black/45 text-white flex items-center justify-center hover:bg-black/60"
+              onClick={() =>
+                setActiveIndex((v) => (v <= 0 ? maxIndex : v - 1))
+              }
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              aria-label="Next media"
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full border border-white/30 bg-black/45 text-white flex items-center justify-center hover:bg-black/60"
+              onClick={() =>
+                setActiveIndex((v) => (v >= maxIndex ? 0 : v + 1))
+              }
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-1 rounded-full bg-black/50 text-white text-[10px] font-mono">
+              {index + 1}/{mediaUrls.length}
+            </div>
+          </>
         )}
       </div>
     </div>

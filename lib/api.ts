@@ -82,6 +82,16 @@ export interface TaskLogDTO {
   created_at: string
 }
 
+export interface TaskDeliverableDTO {
+  id: string
+  task_id: string
+  deliverable_type: string
+  title: string
+  path: string | null
+  description: string | null
+  created_at: string
+}
+
 export interface CreateTaskPayload {
   title: string
   description?: string
@@ -125,6 +135,12 @@ export const api = {
       [] as TaskLogDTO[]
     )
   },
+  getTaskDeliverables: (id: string) =>
+    tryFetch<TaskDeliverableDTO[]>(
+      `/api/tasks/${id}/deliverables`,
+      undefined,
+      [] as TaskDeliverableDTO[]
+    ),
   postActivity: (
     taskId: string,
     payload: {

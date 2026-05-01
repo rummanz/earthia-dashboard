@@ -33,6 +33,9 @@ interface WebhookBody {
   review_score?: number
   review_notes?: string
   published_to?: Record<string, string | null | undefined>
+  media_url?: string
+  media_urls?: string[]
+  thumbnail_url?: string
   media_paths?: string[]
 }
 
@@ -60,6 +63,16 @@ export async function GET() {
 
 function nowIso(): string {
   return new Date().toISOString()
+}
+
+function looksLikeVideo(path: string): boolean {
+  const lower = path.toLowerCase()
+  return (
+    lower.endsWith('.mp4') ||
+    lower.endsWith('.webm') ||
+    lower.endsWith('.mov') ||
+    lower.endsWith('.m4v')
+  )
 }
 
 function safeJson<T>(s: string | null | undefined): T | null {
@@ -159,8 +172,30 @@ export async function POST(req: NextRequest) {
   const reviewNotes = body.review_notes ?? null
   const publishedToRaw = body.published_to ?? null
   const mediaPaths = Array.isArray(body.media_paths) ? body.media_paths : []
+  const mediaUrlsFromBody = Array.isArray(body.media_urls) ? body.media_urls : []
+  const explicitMediaUrl = typeof body.media_url === 'string' ? body.media_url : null
+  const explicitThumbnailUrl =
+    typeof body.thumbnail_url === 'string' ? body.thumbnail_url : null
   const failed = body.status === 'failed'
   const threshold = DEFAULT_REVIEW_THRESHOLD
+
+  const allMedia = Array.from(
+    new Set(
+      [...mediaUrlsFromBody, ...mediaPaths, explicitMediaUrl]
+        .filter((v): v is string => typeof v === 'string')
+        .map((v) => v.trim())
+        .filter(Boolean)
+    )
+  )
+  const mediaUrlValue =
+    allMedia.length > 1
+      ? JSON.stringify(allMedia)
+      : (allMedia[0] ?? null)
+  const thumbnailUrlValue =
+    explicitThumbnailUrl ??
+    allMedia.find((p) => !looksLikeVideo(p)) ??
+    allMedia[0] ??
+    null
 
   // Always log the callback.
   createTaskLog({
@@ -204,6 +239,8 @@ export async function POST(req: NextRequest) {
     status: finalStatus as TaskStatus,
     review_score: reviewScore,
     reviewer_notes: finalReviewerNotes,
+    media_url: mediaUrlValue,
+    thumbnail_url: thumbnailUrlValue,
     published_to:
       Object.keys(publishedTo).length > 0 ? publishedTo : null,
     published_at: finalStatus === 'published' ? nowIso() : null,

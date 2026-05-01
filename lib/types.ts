@@ -49,6 +49,7 @@ export interface ContentItem {
   reviewScore?: number
   reviewNotes?: string
   mediaUrl?: string
+  mediaUrls?: string[]
   thumbnailUrl?: string
   schedule: ScheduleConfig
   publishedPosts?: PublishedPost[]
